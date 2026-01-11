@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket JSON-RPC Client</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: bold;
+        }
+        .connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .panel {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .panel h3 {
+            margin-top: 0;
+            color: #555;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .log-container {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        .log-send {
+            background: #0d2b45;
+            color: #a9d7ea;
+        }
+        .log-receive {
+            background: #1e3a1e;
+            color: #7da77e;
+        }
+        .log-notify {
+            background: #3d2b45;
+            color: #d7a9ea;
+        }
+        .log-error {
+            background: #3a1e1e;
+            color: #d77d7d;
+        }
+        .clear-btn {
+            background: #6c757d;
+        }
+        input {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 100px;
+            margin: 5px;
+        }
+        label {
+            display: inline-block;
+            width: 80px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔌 WebSocket JSON-RPC Client</h1>
+    
+    <div id="status" class="status disconnected">
+        Disconnected - Click "Connect" to start
+    </div>
+    
+    <div class="panel">
+        <h3>Connection</h3>
+        <button id="connectBtn" onclick="connect()">Connect</button>
+        <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+    </div>
+    
+    <div class="panel">
+        <h3>RPC Methods</h3>
+        <div>
+            <button onclick="testEcho()">Echo</button>
+            <button onclick="testAdd()">Add (2 + 3)</button>
+            <button onclick="testMultiply()">Multiply (4 × 5)</button>
+            <button onclick="testGetTime()">Get Time</button>
+        </div>
+        <div style="margin-top: 15px;">
+            <label>Value A:</label>
+            <input type="number" id="inputA" value="10">
+            <label>Value B:</label>
+            <input type="number" id="inputB" value="20">
+            <button onclick="testCustomAdd()">Custom Add</button>
+        </div>
+    </div>
+    
+    <div class="panel">
+        <h3>Connection Log</h3>
+        <button class="clear-btn" onclick="clearLog()">Clear</button>
+        <div id="log" class="log-container"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let requestId = 1;
+        const serverUrl = 'ws://127.0.0.1:9998';
+
+        function updateStatus(connected) {
+            const status = document.getElementById('status');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            
+            if (connected) {
+                status.textContent = '✅ Connected to ' + serverUrl;
+                status.className = 'status connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else {
+                status.textContent = '❌ Disconnected - Click "Connect" to start';
+                status.className = 'status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+        }
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            
+            const time = new Date().toLocaleTimeString();
+            let typeLabel = '';
+            let typeClass = '';
+            
+            switch(type) {
+                case 'send':
+                    typeLabel = '📤 SEND';
+                    typeClass = 'log-send';
+                    break;
+                case 'receive':
+                    typeLabel = '📥 RECV';
+                    typeClass = 'log-receive';
+                    break;
+                case 'notify':
+                    typeLabel = '🔔 NOTIFY';
+                    typeClass = 'log-notify';
+                    break;
+                case 'error':
+                    typeLabel = '❌ ERROR';
+                    typeClass = 'log-error';
+                    break;
+                default:
+                    typeLabel = 'ℹ️ INFO';
+            }
+            
+            entry.innerHTML = `<span style="color: #888;">[${time}]</span> <span style="color: #88f;">${typeLabel}</span>: ${message}`;
+            entry.className = 'log-entry ' + typeClass;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        function connect() {
+            log('Connecting to ' + serverUrl + '...');
+            
+            try {
+                ws = new WebSocket(serverUrl);
+                
+                ws.onopen = () => {
+                    log('WebSocket connection established!', 'info');
+                    updateStatus(true);
+                };
+                
+                ws.onmessage = (event) => {
+                    try {
+                        const msg = JSON.parse(event.data);
+                        
+                        if (msg.method) {
+                            // 服务端通知
+                            log(`Received notification: ${msg.method}<br>Params: ${JSON.stringify(msg.params, null, 2)}`, 'notify');
+                        } else if (msg.result !== undefined) {
+                            // RPC 响应成功
+                            log(`Response for id=${msg.id}:<br>Result: ${JSON.stringify(msg.result, null, 2)}`, 'receive');
+                        } else if (msg.error) {
+                            // RPC 响应错误
+                            log(`Error for id=${msg.id}:<br>Code: ${msg.error.code}<br>Message: ${msg.error.message}`, 'error');
+                        }
+                    } catch (e) {
+                        log('Failed to parse message: ' + event.data, 'error');
+                    }
+                };
+                
+                ws.onclose = (event) => {
+                    log(`Connection closed. Code: ${event.code}, Reason: ${event.reason || 'N/A'}`, 'info');
+                    updateStatus(false);
+                    ws = null;
+                };
+                
+                ws.onerror = (error) => {
+                    log('WebSocket error occurred', 'error');
+                };
+                
+            } catch (e) {
+                log('Failed to create WebSocket: ' + e.message, 'error');
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            updateStatus(false);
+        }
+
+        function sendRequest(method, params) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('Not connected! Please connect first.', 'error');
+                return;
+            }
+            
+            const request = {
+                jsonrpc: '2.0',
+                id: requestId++,
+                method: method,
+                params: params
+            };
+            
+            const jsonStr = JSON.stringify(request);
+            log(`Sending: ${jsonStr}`, 'send');
+            ws.send(jsonStr);
+        }
+
+        // ==================== RPC Tests ====================
+        
+        function testEcho() {
+            const data = {
+                message: 'Hello from JavaScript!',
+                timestamp: Date.now(),
+                random: Math.random()
+            };
+            sendRequest('echo', data);
+        }
+        
+        function testAdd() {
+            sendRequest('add', {a: 2, b: 3});
+        }
+        
+        function testMultiply() {
+            sendRequest('multiply', {a: 4, b: 5});
+        }
+        
+        function testGetTime() {
+            sendRequest('getTime', {});
+        }
+        
+        function testCustomAdd() {
+            const a = parseInt(document.getElementById('inputA').value) || 0;
+            const b = parseInt(document.getElementById('inputB').value) || 0;
+            sendRequest('add', {a: a, b: b});
+        }
+    </script>
+</body>
+</html>
