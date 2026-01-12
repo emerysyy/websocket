@@ -38,6 +38,7 @@ int main() {
     // 设置信号处理
     signal(SIGINT, SignalHandler);
     signal(SIGTERM, SignalHandler);
+    signal(SIGPIPE, SIG_IGN);
 
     std::cout << "========================================" << std::endl;
     std::cout << "  WebSocket JSON-RPC Server" << std::endl;
@@ -112,6 +113,10 @@ int main() {
         std::cerr << "Failed to start server on " << kHost << ":" << kPort << std::endl;
         return 1;
     }
+
+    struct rlimit rl;
+    getrlimit(RLIMIT_NOFILE, &rl);
+    printf("fd limit: soft=%llu hard=%llu\n", rl.rlim_cur, rl.rlim_max);
     
     std::cout << "\nServer is listening on ws://" << kHost << ":" << kPort << std::endl;
     std::cout << "\nAvailable RPC methods:" << std::endl;

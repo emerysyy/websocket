@@ -29,11 +29,13 @@ include_directories(/tmp/single_include)
 # 设置 darwincore 库路径
 set(DARWIN_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libs/darwincore")
 
+message("include:${DARWIN_CORE_DIR}/include")
+
 # 包含 darwincore 头文件
-include_directories("${DARWIN_CORE_DIR}/darwincore/include")
+include_directories("${DARWIN_CORE_DIR}/include")
 
 # 设置 darwincore 库路径
-link_directories("${DARWIN_CORE_DIR}/darwincore/lib")
+link_directories("${DARWIN_CORE_DIR}/lib")
 
 # 根据操作系统类型输出提示信息
 if (APPLE)

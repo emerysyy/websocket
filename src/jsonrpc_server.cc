@@ -43,8 +43,6 @@ bool JsonRpcServer::Start(const std::string& host, uint16_t port) {
         network_server_->SetOnMessage([server_ptr](
             uint64_t connection_id,
             const std::vector<uint8_t>& data) {
-            std::cout << "[###] SetOnMessage callback triggered: conn_id=" << connection_id
-                      << ", size=" << data.size() << std::endl;
             server_ptr->OnNetworkMessage(connection_id, data);
         });
 
@@ -174,45 +172,74 @@ void JsonRpcServer::OnNetworkConnected(const network::ConnectionInformation& inf
 
 void JsonRpcServer::OnNetworkMessage(uint64_t connection_id,
                                       const std::vector<uint8_t>& data) {
-    std::cout << "[***] OnNetworkMessage called: conn_id=" << connection_id
-              << ", size=" << data.size() << std::endl;
+    // 阶段1: 快速获取连接状态并添加数据（持锁）
+    ConnectionState* state_ptr = nullptr;
+    bool need_handshake = false;
 
-    std::lock_guard<std::mutex> lock(connections_mutex_);
-
-    auto it = connections_.find(connection_id);
-    if (it == connections_.end()) {
-        return;
-    }
-
-    ConnectionState& state = it->second;
-
-    // 如果还没完成握手，尝试处理握手
-    if (!state.handshake_completed) {
-        std::string request(data.begin(), data.end());
-        if (HandleHandshake(connection_id, request)) {
-            state.handshake_completed = true;
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex_);
+        auto it = connections_.find(connection_id);
+        if (it == connections_.end()) {
+            return;
         }
-        return;
+
+        ConnectionState& state = it->second;
+        need_handshake = !state.handshake_completed;
+
+        // 如果需要握手,在锁内处理（握手很快）
+        if (need_handshake) {
+            std::string request(data.begin(), data.end());
+            if (HandleHandshake(connection_id, request)) {
+                state.handshake_completed = true;
+            }
+            return;
+        }
+
+        // 追加新数据到缓冲区
+        state.recv_buffer.insert(state.recv_buffer.end(), data.begin(), data.end());
+
+        // 定期清理已处理的数据（当 processed_offset 超过阈值时）
+        if (state.processed_offset > 65536) {  // 64KB 阈值
+            state.recv_buffer.erase(
+                state.recv_buffer.begin(),
+                state.recv_buffer.begin() + state.processed_offset
+            );
+            state.processed_offset = 0;
+        }
+
+        state_ptr = &state;
     }
 
-    // 追加数据到缓冲区
-    state.recv_buffer.insert(state.recv_buffer.end(), data.begin(), data.end());
-
-    // 循环解析帧
-    while (true) {
+    // 阶段2: 循环解析和处理帧（减少锁持有时间）
+    while (state_ptr) {
+        std::optional<Frame> frame;
         size_t consumed = 0;
-        auto frame = state.parser->Parse(state.recv_buffer, consumed);
+
+        {
+            // 短暂持锁：只用于解析
+            std::lock_guard<std::mutex> lock(connections_mutex_);
+            auto& buffer = state_ptr->recv_buffer;
+
+            // 只解析从 processed_offset 开始的数据
+            std::vector<uint8_t> parse_buffer(
+                buffer.begin() + state_ptr->processed_offset,
+                buffer.end()
+            );
+
+            frame = state_ptr->parser->Parse(parse_buffer, consumed);
+
+            if (frame.has_value()) {
+                // 更新偏移量
+                state_ptr->processed_offset += consumed;
+            }
+        }
 
         if (!frame.has_value()) {
             // 数据不完整，等待更多数据
             break;
         }
 
-        // 移除已处理的数据
-        state.recv_buffer.erase(state.recv_buffer.begin(),
-                                state.recv_buffer.begin() + consumed);
-
-        // 处理帧
+        // 无锁处理帧（发送操作在 network_server_ 内部有自己的锁）
         HandleWebSocketFrame(connection_id, *frame);
     }
 }
@@ -270,7 +297,8 @@ void JsonRpcServer::HandleWebSocketFrame(uint64_t connection_id,
         }
         
         case OpCode::kBinary: {
-            // 二进制帧不支持
+            // 二进制帧直接回显（用于压力测试）
+            SendWebSocketFrame(connection_id, frame.payload, OpCode::kBinary);
             break;
         }
         

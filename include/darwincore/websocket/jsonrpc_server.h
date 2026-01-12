@@ -45,6 +45,7 @@ public:
         bool handshake_completed = false;  ///< 是否完成握手
         std::vector<uint8_t> recv_buffer;  ///< 接收缓冲区
         std::unique_ptr<FrameParser> parser;  ///< 帧解析器
+        size_t processed_offset = 0;  ///< 已处理偏移量（优化缓冲区管理）
     };
 
     /**

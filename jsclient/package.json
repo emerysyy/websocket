@@ -1,0 +1,17 @@
+{
+  "name": "darwincore-stress-test",
+  "version": "1.0.0",
+  "description": "WebSocket stress test client for DarwinCore server",
+  "main": "stress-test.js",
+  "type": "module",
+  "scripts": {
+    "start": "node stress-test.js",
+    "test": "node stress-test.js"
+  },
+  "keywords": ["websocket", "stress-test", "performance"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
