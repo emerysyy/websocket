@@ -113,10 +113,10 @@ void JsonRpcServer::BroadcastNotification(const std::string& method,
                                            const nlohmann::json& params) {
     auto notification = jsonrpc::NotificationBuilder::Create(method, params);
     std::vector<uint8_t> payload(notification.begin(), notification.end());
-    
+
     std::lock_guard<std::mutex> lock(connections_mutex_);
     for (const auto& [connection_id, state] : connections_) {
-        if (state.handshake_completed) {
+        if (state->phase == ConnectionPhase::kWebSocket) {
             SendWebSocketFrame(connection_id, payload, OpCode::kText);
         }
     }
@@ -154,17 +154,19 @@ void JsonRpcServer::SetOnError(
 }
 
 void JsonRpcServer::OnNetworkConnected(const network::ConnectionInformation& info) {
-    // 创建新的连接状态
-    ConnectionState state;
-    state.parser = std::make_unique<FrameParser>();
+    // 创建新的连接状态（使用 shared_ptr）
+    auto state = std::make_shared<ConnectionState>();
+    state->phase = ConnectionPhase::kHandshake;
+    state->parser = std::make_unique<FrameParser>();
+    state->processed_offset = 0;
 
     // 先添加连接
     {
         std::lock_guard<std::mutex> lock(connections_mutex_);
-        connections_[info.connection_id] = std::move(state);
+        connections_[info.connection_id] = state;
     }
 
-    // 在锁外调用用户回调，避免死锁（回调可能会调用 GetConnectionCount 等需要锁的方法）
+    // 在锁外调用用户回调，避免死锁
     if (on_connected_) {
         on_connected_(info.connection_id, info);
     }
@@ -172,61 +174,139 @@ void JsonRpcServer::OnNetworkConnected(const network::ConnectionInformation& inf
 
 void JsonRpcServer::OnNetworkMessage(uint64_t connection_id,
                                       const std::vector<uint8_t>& data) {
-    // 阶段1: 快速获取连接状态并添加数据（持锁）
-    ConnectionState* state_ptr = nullptr;
-    bool need_handshake = false;
+    // 阶段1: 获取连接状态的 shared_ptr（线程安全）
+    std::shared_ptr<ConnectionState> state_ptr;
+    ConnectionPhase current_phase = ConnectionPhase::kHandshake;
 
     {
         std::lock_guard<std::mutex> lock(connections_mutex_);
         auto it = connections_.find(connection_id);
         if (it == connections_.end()) {
+            return;  // 连接已关闭
+        }
+
+        // 拷贝 shared_ptr，增加引用计数（锁外安全使用）
+        state_ptr = it->second;
+        current_phase = state_ptr->phase;
+
+        // 检查缓冲区大小限制（防止 DoS）
+        if (!IsHandshakeSizeValid(state_ptr->recv_buffer.size() + data.size())) {
+            // 缓冲区过大，关闭连接
+            connections_.erase(connection_id);
+            CloseConnection(connection_id, 1009, "Message too big");
             return;
         }
 
-        ConnectionState& state = it->second;
-        need_handshake = !state.handshake_completed;
-
-        // 如果需要握手,在锁内处理（握手很快）
-        if (need_handshake) {
-            std::string request(data.begin(), data.end());
-            if (HandleHandshake(connection_id, request)) {
-                state.handshake_completed = true;
-            }
-            return;
-        }
-
-        // 追加新数据到缓冲区
-        state.recv_buffer.insert(state.recv_buffer.end(), data.begin(), data.end());
-
-        // 定期清理已处理的数据（当 processed_offset 超过阈值时）
-        if (state.processed_offset > 65536) {  // 64KB 阈值
-            state.recv_buffer.erase(
-                state.recv_buffer.begin(),
-                state.recv_buffer.begin() + state.processed_offset
-            );
-            state.processed_offset = 0;
-        }
-
-        state_ptr = &state;
+        // 追加数据到缓冲区
+        state_ptr->recv_buffer.insert(
+            state_ptr->recv_buffer.end(),
+            data.begin(),
+            data.end()
+        );
     }
 
-    // 阶段2: 循环解析和处理帧（减少锁持有时间）
-    while (state_ptr) {
+    // 阶段2: 根据连接阶段处理数据（锁外执行，避免死锁）
+    if (current_phase == ConnectionPhase::kHandshake) {
+        ProcessHandshakePhase(connection_id, state_ptr);
+    } else {
+        ProcessWebSocketFramePhase(connection_id, state_ptr);
+    }
+}
+
+void JsonRpcServer::ProcessHandshakePhase(
+    uint64_t connection_id,
+    std::shared_ptr<ConnectionState> state_ptr) {
+
+    // 查找完整 HTTP 请求结束标记
+    size_t request_end = FindHttpRequestEnd(state_ptr->recv_buffer);
+
+    if (request_end == std::string::npos) {
+        // 数据不完整，等待更多数据
+        return;
+    }
+
+    // 提取完整的握手请求（避免拷贝，使用 string_view 的思想）
+    std::string request(
+        state_ptr->recv_buffer.begin(),
+        state_ptr->recv_buffer.begin() + request_end + 4
+    );
+
+    // 锁外执行握手处理（避免死锁）
+    bool handshake_success = HandleHandshake(connection_id, request);
+
+    // 更新连接状态（需要持锁）
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex_);
+        auto it = connections_.find(connection_id);
+        if (it == connections_.end()) {
+            return;  // 连接已关闭
+        }
+
+        if (handshake_success) {
+            // 握手成功，移除已处理的握手数据
+            state_ptr->recv_buffer.erase(
+                state_ptr->recv_buffer.begin(),
+                state_ptr->recv_buffer.begin() + request_end + 4
+            );
+            state_ptr->phase = ConnectionPhase::kWebSocket;
+            state_ptr->processed_offset = 0;  // 重置偏移量
+
+            // 如果缓冲区还有数据，继续处理第一帧
+            if (!state_ptr->recv_buffer.empty()) {
+                // 递归调用帧处理
+                ProcessWebSocketFramePhase(connection_id, state_ptr);
+            }
+        } else {
+            // 握手失败，清空缓冲区并关闭连接
+            state_ptr->recv_buffer.clear();
+            connections_.erase(connection_id);
+            CloseConnection(connection_id, 1002, "Invalid handshake");
+        }
+    }
+}
+
+void JsonRpcServer::ProcessWebSocketFramePhase(
+    uint64_t connection_id,
+    std::shared_ptr<ConnectionState> state_ptr) {
+
+    // 定期清理已处理的数据
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex_);
+        if (state_ptr->processed_offset > 65536) {  // 64KB 阈值
+            size_t erase_len = std::min(
+                state_ptr->processed_offset,
+                state_ptr->recv_buffer.size()
+            );
+            state_ptr->recv_buffer.erase(
+                state_ptr->recv_buffer.begin(),
+                state_ptr->recv_buffer.begin() + erase_len
+            );
+            state_ptr->processed_offset = 0;
+        }
+    }
+
+    // 循环解析和处理帧（减少锁持有时间）
+    while (true) {
         std::optional<Frame> frame;
         size_t consumed = 0;
 
         {
-            // 短暂持锁：只用于解析
             std::lock_guard<std::mutex> lock(connections_mutex_);
+
+            // 简短检查：连接是否还存在
+            if (connections_.find(connection_id) == connections_.end()) {
+                return;  // 连接已关闭
+            }
+
             auto& buffer = state_ptr->recv_buffer;
 
-            // 只解析从 processed_offset 开始的数据
-            std::vector<uint8_t> parse_buffer(
-                buffer.begin() + state_ptr->processed_offset,
-                buffer.end()
-            );
+            // 直接传递指针和长度，避免拷贝
+            const uint8_t* data_ptr = buffer.data() + state_ptr->processed_offset;
+            size_t data_len = buffer.size() - state_ptr->processed_offset;
 
-            frame = state_ptr->parser->Parse(parse_buffer, consumed);
+            // 构造临时 view 用于解析
+            std::vector<uint8_t> parse_view(data_ptr, data_ptr + data_len);
+            frame = state_ptr->parser->Parse(parse_view, consumed);
 
             if (frame.has_value()) {
                 // 更新偏移量
@@ -239,7 +319,7 @@ void JsonRpcServer::OnNetworkMessage(uint64_t connection_id,
             break;
         }
 
-        // 无锁处理帧（发送操作在 network_server_ 内部有自己的锁）
+        // 锁外处理帧（避免死锁）
         HandleWebSocketFrame(connection_id, *frame);
     }
 }
@@ -336,15 +416,54 @@ bool JsonRpcServer::SendWebSocketFrame(uint64_t connection_id,
 void JsonRpcServer::HandleJsonRpcRequest(uint64_t connection_id,
                                           const std::string& request) {
     std::string response = rpc_handler_->HandleRequest(request);
-    
+
     // 通知不需要响应
     if (response.empty()) {
         return;
     }
-    
+
     // 发送响应
     std::vector<uint8_t> response_data(response.begin(), response.end());
     SendWebSocketFrame(connection_id, response_data, OpCode::kText);
+}
+
+size_t JsonRpcServer::FindHttpRequestEnd(const std::vector<uint8_t>& buffer) {
+    /**
+     * 在缓冲区中查找 HTTP 请求结束标记 \r\n\r\n
+     *
+     * @param buffer 数据缓冲区
+     * @return 找到返回结束位置，否则返回 std::string::npos
+     *
+     * 性能优化：直接在 vector<uint8_t> 上查找，避免转换为 string
+     */
+    if (buffer.size() < 4) {
+        return std::string::npos;
+    }
+
+    // 查找 \r\n\r\n 模式
+    for (size_t i = 0; i <= buffer.size() - 4; ++i) {
+        if (buffer[i] == '\r' &&
+            buffer[i + 1] == '\n' &&
+            buffer[i + 2] == '\r' &&
+            buffer[i + 3] == '\n') {
+            return i;
+        }
+    }
+
+    return std::string::npos;
+}
+
+bool JsonRpcServer::IsHandshakeSizeValid(size_t size) {
+    /**
+     * 检查握手数据大小是否合法（防止慢速 DoS 攻击）
+     *
+     * @param size 数据大小
+     * @return 合法返回 true
+     *
+     * RFC 7230 建议最小 8KB，这里设置 16KB 为上限
+     */
+    constexpr size_t kMaxHandshakeSize = 16 * 1024;  // 16KB
+    return size <= kMaxHandshakeSize;
 }
 
 }  // namespace websocket
