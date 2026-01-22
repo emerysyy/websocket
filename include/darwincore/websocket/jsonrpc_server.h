@@ -22,6 +22,11 @@
 namespace darwincore {
 namespace websocket {
 
+// WebSocket 协议常量
+constexpr size_t kMaxHandshakeSize = 16 * 1024;      // 16KB，最大握手大小
+constexpr size_t kMaxWebSocketFrameSize = 10 * 1024 * 1024; // 10MB，最大 WebSocket 帧大小
+constexpr size_t kBufferCleanupThreshold = 64 * 1024; // 64KB，缓冲区清理阈值
+
 /**
  * @brief 连接阶段（状态机）
  */
@@ -133,8 +138,9 @@ public:
      * @param connection_id 连接 ID
      * @param code WebSocket 关闭码（默认 1000 正常关闭）
      * @param reason 关闭原因
+     * @return 连接存在返回 true，不存在返回 false
      */
-    void CloseConnection(uint64_t connection_id,
+    bool CloseConnection(uint64_t connection_id,
                          uint16_t code = 1000,
                          const std::string& reason = "");
 
@@ -197,8 +203,9 @@ private:
 
     /**
      * @brief 处理握手阶段的数据
+     * @return 握手成功且缓冲区还有数据需要继续处理返回 true
      */
-    void ProcessHandshakePhase(
+    bool ProcessHandshakePhase(
         uint64_t connection_id,
         std::shared_ptr<ConnectionState> state_ptr);
 
@@ -253,6 +260,19 @@ private:
     bool SendWebSocketFrame(uint64_t connection_id,
                             const std::vector<uint8_t>& payload,
                             OpCode opcode);
+
+    /**
+     * @brief 内部方法：关闭连接并可选择是否从连接表中删除
+     * @param connection_id 连接 ID
+     * @param code WebSocket 关闭码
+     * @param reason 关闭原因
+     * @param remove_from_map 是否从连接表中删除（默认 true）
+     * @return 连接存在返回 true，不存在返回 false
+     */
+    bool CloseConnectionInternal(uint64_t connection_id,
+                                  uint16_t code,
+                                  const std::string& reason,
+                                  bool remove_from_map);
 
     // ==================== JSON-RPC 处理 ====================
 

@@ -23,16 +23,21 @@ MESSAGE("project source dir:${PROJECT_SOURCE_DIR} project name:${PROJECT_NAME}")
 set(PROJECT_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_INCLUDE_DIR})
 
-# 包含 nlohmann/json（单文件版本）
-include_directories(/tmp/single_include)
+
+set(LIBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libs")
 
 # 设置 darwincore 库路径
-set(DARWIN_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libs/darwincore")
+set(DARWIN_CORE_DIR "${LIBS_DIR}/darwincore")
+
+set(JSON_DIR "${LIBS_DIR}/nlohmann")
 
 message("include:${DARWIN_CORE_DIR}/include")
 
 # 包含 darwincore 头文件
-include_directories("${DARWIN_CORE_DIR}/include")
+include_directories(
+    "${DARWIN_CORE_DIR}/include"
+    "${JSON_DIR}/include"
+    )
 
 # 设置 darwincore 库路径
 link_directories("${DARWIN_CORE_DIR}/lib")
