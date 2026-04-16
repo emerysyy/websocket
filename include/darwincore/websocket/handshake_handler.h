@@ -1,165 +1,142 @@
 // Copyright (C) 2025
 // Licensed under the MIT License
 
-#pragma once
+#ifndef DARWINCORE_WEBSOCKET_HANDSHAKE_HANDLER_H_
+#define DARWINCORE_WEBSOCKET_HANDSHAKE_HANDLER_H_
 
+#include <optional>
 #include <string>
 #include <vector>
-#include <algorithm>
-#include <cctype>
 
 namespace darwincore {
 namespace websocket {
 
-// 辅助函数：大小写不敏感的字符串比较
-inline bool CaseInsensitiveStringCompare(const std::string& str1, const std::string& str2) {
-    if (str1.length() != str2.length()) {
-        return false;
-    }
-    return std::equal(str1.begin(), str1.end(), str2.begin(),
-        [](char a, char b) {
-            return tolower(static_cast<unsigned char>(a)) ==
-                   tolower(static_cast<unsigned char>(b));
-        });
-}
-
-// 辅助函数：检查字符串中是否包含某个 token（大小写不敏感，用于 Connection 头等）
-inline bool CaseInsensitiveContainsToken(const std::string& header_value, const std::string& token) {
-    auto it = header_value.begin();
-    auto end = header_value.end();
-
-    while (it != end) {
-        // 跳过逗号和空格
-        while (it != end && (*it == ',' || *it == ' ' || *it == '\t')) {
-            ++it;
-        }
-
-        auto token_start = it;
-        // 找到 token 结束位置
-        while (it != end && *it != ',' && *it != ' ' && *it != '\t') {
-            ++it;
-        }
-
-        std::string found_token(token_start, it);
-        if (CaseInsensitiveStringCompare(found_token, token)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 /**
- * @brief WebSocket 握手错误码
+ * @brief WebSocket 握手错误类型
  */
 enum class HandshakeError {
-    kNone = 0,
-    kInvalidHttpVersion,      // HTTP 版本不是 1.1
-    kInvalidMethod,           // 不是 GET 方法
-    kMissingUpgrade,          // 缺少 Upgrade 头
-    kMissingConnection,       // 缺少 Connection 头
-    kMissingVersion,          // 缺少 Sec-WebSocket-Version 头
-    kInvalidVersion,          // Sec-WebSocket-Version 不是 13
-    kMissingKey,              // 缺少 Sec-WebSocket-Key 头
-    kInvalidKey,              // Sec-WebSocket-Key 格式无效
-    kMissingHost,             // 缺少 Host 头（HTTP/1.1 强制要求）
-    kRequestTooLarge,         // 请求过大（DoS 防护）
-    kMalformedRequest         // 请求格式错误
+  kNone = 0,
+  kMalformedRequest,
+  kInvalidMethod,
+  kInvalidHttpVersion,
+  kMissingUpgrade,
+  kMissingConnection,
+  kMissingHost,
+  kMissingKey,
+  kInvalidKey,
+  kMissingVersion,
+  kInvalidVersion,
+  kRequestTooLarge,
 };
 
 /**
  * @brief WebSocket 握手处理器
  *
- * 负责解析 HTTP 升级请求并生成 WebSocket 握手响应。
- * 遵循 RFC 6455 标准。
+ * 处理 HTTP Upgrade 到 WebSocket 的握手流程。
+ * 验证客户端请求并生成正确的握手响应。
  */
 class HandshakeHandler {
-public:
-    /**
-     * @brief 默认构造函数
-     */
-    HandshakeHandler() = default;
-    
-    /**
-     * @brief 解析 HTTP 升级请求
-     * @param request HTTP 请求字符串
-     * @return 解析成功返回 true
-     */
-    bool ParseRequest(const std::string& request);
-    
-    /**
-     * @brief 生成 HTTP 升级响应
-     * @return HTTP 响应字符串
-     */
-    std::string GenerateResponse() const;
+ public:
+  HandshakeHandler() = default;
+  ~HandshakeHandler() = default;
 
-    /**
-     * @brief 生成 HTTP 错误响应
-     * @param error 错误码
-     * @return HTTP 错误响应字符串
-     */
-    static std::string GenerateErrorResponse(HandshakeError error);
+  /**
+   * @brief 解析客户端握手请求
+   * @param request 原始 HTTP 请求字符串
+   * @return 解析成功返回 true
+   */
+  bool ParseRequest(const std::string& request);
 
-    /**
-     * @brief 验证握手是否有效
-     * @return 有效返回 true
-     */
-    bool IsValid() const;
+  /**
+   * @brief 生成握手成功响应
+   * @return HTTP 101 Switching Protocols 响应字符串
+   */
+  std::string GenerateResponse() const;
 
-    /**
-     * @brief 获取最后的错误码
-     * @return 错误码
-     */
-    HandshakeError GetLastError() const;
+  /**
+   * @brief 生成握手错误响应
+   * @param error 错误类型
+   * @return HTTP 错误响应字符串
+   */
+  std::string GenerateErrorResponse(HandshakeError error);
 
-    /**
-     * @brief 获取提取的 WebSocket 密钥
-     * @return WebSocket 密钥
-     */
-    const std::string& WebSocketKey() const;
-    
-    /**
-     * @brief 获取请求的 URI
-     * @return 请求 URI
-     */
-    const std::string& RequestUri() const;
+  /**
+   * @brief 检查握手是否有效
+   * @return 有效返回 true
+   */
+  bool IsValid() const;
 
-    /**
-     * @brief 设置服务器支持的子协议列表
-     * @param protocols 服务器支持的协议列表
-     *
-     * 用于协商 Subprotocol。如果客户端提供了 Sec-WebSocket-Protocol，
-     * 服务器将从此列表中选择第一个匹配的协议。
-     */
-    void SetSupportedProtocols(const std::vector<std::string>& protocols);
+  /**
+   * @brief 获取最近一次错误
+   * @return 错误类型
+   */
+  HandshakeError GetLastError() const;
 
-    /**
-     * @brief 获取协商后的子协议
-     * @return 协商后的协议，如果没有则为空
-     */
-    const std::string& NegotiatedProtocol() const;
+  /**
+   * @brief 获取客户端发送的 Sec-WebSocket-Key
+   * @return WebSocket Key 字符串
+   */
+  const std::string& WebSocketKey() const;
 
-private:
-    /**
-     * @brief 生成 Sec-WebSocket-Accept 值
-     * @param key Sec-WebSocket-Key
-     * @return Sec-WebSocket-Accept 值
-     */
-    std::string GenerateAcceptKey(const std::string& key) const;
-    
-    static constexpr const char* kWebSocketMagicString =
-        "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    
-    std::string request_uri_;
-    std::string host_;
-    std::string websocket_key_;
-    std::string origin_;
-    std::string requested_protocols_;  // 客户端请求的协议列表
-    std::string negotiated_protocol_;  // 协商后的协议
-    std::vector<std::string> supported_protocols_;  // 服务器支持的协议列表
-    bool is_valid_ = false;
-    HandshakeError last_error_ = HandshakeError::kNone;
+  /**
+   * @brief 获取请求 URI
+   * @return 请求 URI
+   */
+  const std::string& RequestUri() const;
+
+  /**
+   * @brief 设置服务器支持的子协议列表
+   * @param protocols 支持的协议列表
+   */
+  void SetSupportedProtocols(const std::vector<std::string>& protocols);
+
+  /**
+   * @brief 获取协商后的子协议
+   * @return 协商成功的协议，若未协商则为空
+   */
+  const std::string& NegotiatedProtocol() const;
+
+ private:
+  /**
+   * @brief 生成 Sec-WebSocket-Accept 密钥
+   * @param key 客户端提供的 Sec-WebSocket-Key
+   * @return 计算后的 Accept 密钥
+   */
+  std::string GenerateAcceptKey(const std::string& key) const;
+
+  /**
+   * @brief 大小写不敏感字符串比较
+   */
+  static bool CaseInsensitiveStringCompare(const std::string& a,
+                                           const std::string& b);
+
+  /**
+   * @brief 检查字符串列表中是否包含指定 token
+   */
+  static bool CaseInsensitiveContainsToken(const std::string& list,
+                                           const std::string& token);
+
+  // RFC 6455 魔数字符串
+  static constexpr const char* kWebSocketMagicString =
+      "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+  // 状态
+  bool is_valid_ = false;
+  HandshakeError last_error_ = HandshakeError::kNone;
+
+  // 解析的请求数据
+  std::string request_uri_;
+  std::string host_;
+  std::string websocket_key_;
+  std::string origin_;
+  std::string requested_protocols_;
+
+  // 子协议协商
+  std::vector<std::string> supported_protocols_;
+  std::string negotiated_protocol_;
 };
 
 }  // namespace websocket
 }  // namespace darwincore
+
+#endif  // DARWINCORE_WEBSOCKET_HANDSHAKE_HANDLER_H_

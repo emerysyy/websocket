@@ -1,9 +1,10 @@
 # 源文件列表
 set(SOURCES
-    frame_parser.cc
-    frame_builder.cc
-    handshake_handler.cc
-    jsonrpc_server.cc
+    websocket/frame_parser.cc
+    websocket/frame_builder.cc
+    websocket/handshake_handler.cc
+    websocket/session.cc
+    jsonrpc/jsonrpc_server.cc
     jsonrpc/request_handler.cc
     jsonrpc/notification_builder.cc
 )
@@ -20,7 +21,6 @@ set_target_properties(websocket_lib PROPERTIES
 # 链接依赖
 target_link_libraries(websocket_lib
     PUBLIC
-        darwincore_network
         pthread
 )
 

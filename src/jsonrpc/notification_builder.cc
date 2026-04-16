@@ -1,26 +1,27 @@
 // Copyright (C) 2025
 // Licensed under the MIT License
 
-#include "darwincore/websocket/jsonrpc/notification_builder.h"
+#include "darwincore/jsonrpc/notification_builder.h"
 
 namespace darwincore {
 namespace jsonrpc {
 
 std::string NotificationBuilder::Create(const std::string& method,
-                                         const nlohmann::json& params) {
-    nlohmann::json notification;
-    notification["jsonrpc"] = "2.0";
-    notification["method"] = method;
-    
-    if (!params.is_null()) {
-        notification["params"] = params;
-    }
-    
-    return notification.dump();
+                                        const nlohmann::json& params) {
+  nlohmann::json notification = {
+    {"jsonrpc", "2.0"},
+    {"method", method},
+    {"params", params}
+  };
+  return notification.dump();
 }
 
 std::string NotificationBuilder::Create(const std::string& method) {
-    return Create(method, nlohmann::json::value_t::null);
+  nlohmann::json notification = {
+    {"jsonrpc", "2.0"},
+    {"method", method}
+  };
+  return notification.dump();
 }
 
 }  // namespace jsonrpc

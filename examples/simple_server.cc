@@ -11,7 +11,7 @@
 #include <thread>
 
 #include "darwincore/network/server.h"
-#include "darwincore/websocket/jsonrpc_server.h"
+#include "darwincore/jsonrpc/jsonrpc_server.h"
 
 using namespace darwincore::websocket;
 
@@ -92,9 +92,9 @@ int main() {
 
   server.SetOnClientConnected(
       [&server](uint64_t conn_id,
-                const darwincore::network::ConnectionInformation &info) {
+                const ConnectionInformation &info) {
         std::cout << "\n[+] Client connected: " << conn_id << " from "
-                  << info.peer_address << ":" << info.peer_port << std::endl;
+                  << info.remote_address << ":" << info.remote_port << std::endl;
         std::cout << "    Total connections: " << server.GetConnectionCount()
                   << std::endl;
       });

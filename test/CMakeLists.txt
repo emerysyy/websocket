@@ -5,10 +5,13 @@ find_package(GTest REQUIRED)
 
 # 创建测试可执行文件
 add_executable(run_tests
-    frame_parser_test.cc
-    frame_builder_test.cc
-    handshake_handler_test.cc
-    jsonrpc_test.cc
+    websocket/frame_parser_test.cc
+    websocket/frame_builder_test.cc
+    websocket/handshake_handler_test.cc
+    websocket/websocket_session_test.cc
+    jsonrpc/request_handler_test.cc
+    jsonrpc/notification_builder_test.cc
+    jsonrpc/jsonrpc_server_test.cc
 )
 
 target_link_libraries(run_tests

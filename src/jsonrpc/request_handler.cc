@@ -1,203 +1,153 @@
 // Copyright (C) 2025
 // Licensed under the MIT License
 
-#include "darwincore/websocket/jsonrpc/request_handler.h"
+#include "darwincore/jsonrpc/request_handler.h"
 
-#include <sstream>
+#include <optional>
 
 namespace darwincore {
 namespace jsonrpc {
 
-RequestHandler::RequestHandler() {
-    // 注册内置方法（如果需要）
-}
-
 void RequestHandler::RegisterMethod(const std::string& method,
-                                     MethodHandler handler) {
-    methods_[method] = std::move(handler);
+                                   MethodHandler handler) {
+  methods_[method] = std::move(handler);
 }
 
-std::string RequestHandler::HandleRequest(const std::string& request_json) {
-    nlohmann::json request;
-    
-    try {
-        request = nlohmann::json::parse(request_json);
-    } catch (const nlohmann::json::parse_error&) {
-        // JSON 解析错误
-        nlohmann::json error_response = CreateErrorResponse(
-            nlohmann::json::value_t::null,
-            kParseError,
-            "Parse error"
-        );
-        return error_response.dump();
-    }
-    
-    // 检查是否是批量请求
-    if (request.is_array()) {
-        return HandleBatch(request_json);
-    }
-    
-    // 处理单个请求
-    auto response = ProcessSingleRequest(request);
-    if (response.has_value()) {
-        return response->dump();
-    }
-    
-    // 通知类请求没有响应
-    return "";
-}
+std::string RequestHandler::HandleRequest(const std::string& request) {
+  json request_json;
 
-std::string RequestHandler::HandleBatch(const std::string& batch_json) {
-    nlohmann::json batch;
-    
-    try {
-        batch = nlohmann::json::parse(batch_json);
-    } catch (const nlohmann::json::parse_error&) {
-        // JSON 解析错误
-        nlohmann::json error_response = CreateErrorResponse(
-            nlohmann::json::value_t::null,
-            kParseError,
-            "Parse error"
-        );
-        return error_response.dump();
-    }
-    
-    if (!batch.is_array()) {
-        nlohmann::json error_response = CreateErrorResponse(
-            nlohmann::json::value_t::null,
-            kInvalidRequest,
-            "Batch request must be an array"
-        );
-        return error_response.dump();
-    }
-    
-    std::vector<nlohmann::json> responses;
-    
-    for (const auto& request : batch) {
-        auto response = ProcessSingleRequest(request);
-        if (response.has_value()) {
-            responses.push_back(*response);
-        }
-    }
-    
-    // 如果全部是通知，返回空字符串
+  try {
+    request_json = json::parse(request);
+  } catch (...) {
+    return CreateErrorResponse(JsonRpcError::kParseError, "Parse error").dump();
+  }
+
+  // 批量请求
+  if (request_json.is_array()) {
+    auto responses = HandleBatch(request_json);
     if (responses.empty()) {
-        return "";
+      return "";  // 全部是通知
     }
-    
-    return nlohmann::json(responses).dump();
+    return json(responses).dump();
+  }
+
+  // 单个请求
+  auto response = HandleSingleRequest(request_json);
+  if (!response.has_value()) {
+    return "";  // 通知不返回
+  }
+  return response->dump();
+}
+
+std::vector<json> RequestHandler::HandleBatch(const std::vector<json>& requests) {
+  std::vector<json> responses;
+
+  for (const auto& request : requests) {
+    auto response = HandleSingleRequest(request);
+    if (response.has_value()) {
+      responses.push_back(*response);
+    }
+  }
+
+  return responses;
 }
 
 std::vector<std::string> RequestHandler::RegisteredMethods() const {
-    std::vector<std::string> result;
-    result.reserve(methods_.size());
-    
-    for (const auto& [method, _] : methods_) {
-        result.push_back(method);
-    }
-    
-    return result;
+  std::vector<std::string> result;
+  result.reserve(methods_.size());
+  for (const auto& [name, _] : methods_) {
+    result.push_back(name);
+  }
+  return result;
 }
 
-nlohmann::json RequestHandler::CreateErrorResponse(const nlohmann::json& id,
-                                                    int code,
-                                                    const std::string& message) {
-    nlohmann::json error;
-    error["code"] = code;
-    error["message"] = message;
-    
-    nlohmann::json response;
-    response["jsonrpc"] = "2.0";
-    response["error"] = error;
-    
-    if (!id.is_null() && id != nlohmann::json::value_t::null) {
-        response["id"] = id;
+std::optional<json> RequestHandler::HandleSingleRequest(const json& request) {
+  // 检查是否为有效对象
+  if (!request.is_object()) {
+    return CreateErrorResponse(JsonRpcError::kInvalidRequest, "Invalid Request",
+                               request.contains("id") ? std::optional(request["id"]) : std::nullopt);
+  }
+
+  // 检查 jsonrpc 版本
+  if (!request.contains("jsonrpc") || request["jsonrpc"] != "2.0") {
+    return CreateErrorResponse(JsonRpcError::kInvalidRequest, "Invalid Request",
+                               request.contains("id") ? std::optional(request["id"]) : std::nullopt);
+  }
+
+  // 检查 method
+  if (!request.contains("method") || !request["method"].is_string()) {
+    return CreateErrorResponse(JsonRpcError::kInvalidRequest, "Invalid Request",
+                               request.contains("id") ? std::optional(request["id"]) : std::nullopt);
+  }
+
+  std::string method = request["method"];
+  bool is_notification = !request.contains("id");
+
+  // 查找方法
+  auto it = methods_.find(method);
+  if (it == methods_.end()) {
+    if (is_notification) {
+      return std::nullopt;  // 通知不返回错误
     }
-    
-    return response;
+    return CreateErrorResponse(JsonRpcError::kMethodNotFound, "Method not found",
+                               request["id"]);
+  }
+
+  // 获取参数
+  json params = nullptr;
+  if (request.contains("params")) {
+    params = request["params"];
+  }
+
+  // 调用方法
+  try {
+    json result = it->second(params);
+    if (is_notification) {
+      return std::nullopt;
+    }
+    return CreateSuccessResponse(result, request["id"]);
+  } catch (const json::exception& e) {
+    if (is_notification) {
+      return std::nullopt;
+    }
+    return CreateErrorResponse(JsonRpcError::kInvalidParams, e.what(),
+                               request["id"]);
+  } catch (...) {
+    if (is_notification) {
+      return std::nullopt;
+    }
+    return CreateErrorResponse(JsonRpcError::kInternalError, "Internal error",
+                               request["id"]);
+  }
 }
 
-nlohmann::json RequestHandler::CreateSuccessResponse(const nlohmann::json& id,
-                                                      const nlohmann::json& result) {
-    nlohmann::json response;
-    response["jsonrpc"] = "2.0";
-    response["id"] = id;
-    response["result"] = result;
-    return response;
+json RequestHandler::CreateErrorResponse(int32_t code,
+                                        const std::string& message,
+                                        const std::optional<json>& id) {
+  json response = {
+    {"jsonrpc", "2.0"},
+    {"error", {
+      {"code", code},
+      {"message", message}
+    }}
+  };
+
+  if (id.has_value()) {
+    response["id"] = *id;
+  } else {
+    response["id"] = nullptr;
+  }
+
+  return response;
 }
 
-bool RequestHandler::ValidateRequest(const nlohmann::json& request) const {
-    // 检查是否是对象
-    if (!request.is_object()) {
-        return false;
-    }
-    
-    // 检查 jsonrpc 版本
-    if (!request.contains("jsonrpc") || request["jsonrpc"] != "2.0") {
-        return false;
-    }
-    
-    // 检查 method 字段
-    if (!request.contains("method") || !request["method"].is_string()) {
-        return false;
-    }
-    
-    return true;
-}
-
-std::optional<nlohmann::json> RequestHandler::ProcessSingleRequest(
-    const nlohmann::json& request) {
-    // 验证请求格式
-    if (!ValidateRequest(request)) {
-        nlohmann::json id;
-        if (request.contains("id")) {
-            id = request["id"];
-        }
-        return CreateErrorResponse(id, kInvalidRequest, "Invalid Request");
-    }
-    
-    std::string method_name = request["method"];
-    
-    // 获取 params（可选）
-    nlohmann::json params;
-    if (request.contains("params")) {
-        params = request["params"];
-    }
-    
-    // 获取 id（通知可能没有 id）
-    nlohmann::json id;
-    if (request.contains("id")) {
-        id = request["id"];
-    }
-    
-    // 检查是否是通知（没有 id）
-    bool is_notification = !request.contains("id");
-    
-    // 查找方法
-    auto it = methods_.find(method_name);
-    if (it == methods_.end()) {
-        if (is_notification) {
-            return std::nullopt;  // 通知不返回错误
-        }
-        return CreateErrorResponse(id, kMethodNotFound, "Method not found");
-    }
-    
-    // 调用方法
-    try {
-        nlohmann::json result = it->second(params);
-        
-        if (is_notification) {
-            return std::nullopt;  // 通知不返回响应
-        }
-        
-        return CreateSuccessResponse(id, result);
-    } catch (const std::exception& e) {
-        if (is_notification) {
-            return std::nullopt;
-        }
-        return CreateErrorResponse(id, kInternalError,
-                                   std::string("Internal error: ") + e.what());
-    }
+json RequestHandler::CreateSuccessResponse(const json& result,
+                                          const json& id) {
+  return {
+    {"jsonrpc", "2.0"},
+    {"result", result},
+    {"id", id}
+  };
 }
 
 }  // namespace jsonrpc

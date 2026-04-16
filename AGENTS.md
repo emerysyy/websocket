@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code when working in this repository.
+This file provides guidance to Codex when working in this repository.
 
 ## 项目定位
 
@@ -23,11 +23,11 @@ This file provides guidance to Claude Code when working in this repository.
 - 不要重新引入旧的全局连接表、`connections_mutex_`、`recv_buffer_` 方案。
 - WebSocket 层不直接耦合 JSON-RPC 业务，JSON-RPC 层建立在 WebSocket 层之上。
 
-## 线程与回调
+## 线程安全
 
 - DarwinCore 回调在工作线程中执行。
 - 用户回调必须在锁外调用。
-- 会话状态应挂在 `Connection::context_` 上，而不是集中在服务器对象里。
+- 会话状态应挂在 `Connection::context_`，而不是集中在服务器对象里。
 
 ## 构建与测试
 
@@ -48,4 +48,4 @@ make -j$(sysctl -n hw.ncpu)
 
 1. `docs/refactor/`
 2. `docs/develop/`
-3. `README.md`
+3. 根目录 `README.md`

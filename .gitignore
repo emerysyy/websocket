@@ -6,6 +6,7 @@ cmake-build-*/
 *.dylib
 jsclient/node_modules/
 examples/nodejs-client/node_modules/
+3rd/
 
 # macOS
 .DS_Store
@@ -16,6 +17,7 @@ examples/nodejs-client/node_modules/
 .clinerules/
 .claude/
 .cache/
+.workbuddy/
 
 # logs
 *.log
