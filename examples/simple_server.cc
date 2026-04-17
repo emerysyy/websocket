@@ -91,22 +91,20 @@ int main() {
   // ==================== 设置事件回调 ====================
 
   server.SetOnClientConnected(
-      [&server](uint64_t conn_id,
-                const ConnectionInformation &info) {
-        std::cout << "\n[+] Client connected: " << conn_id << " from "
-                  << info.remote_address << ":" << info.remote_port << std::endl;
+      [&server](const ConnectionPtr& conn) {
+        std::cout << "\n[+] Client connected: " << conn->connection_id() << std::endl;
         std::cout << "    Total connections: " << server.GetConnectionCount()
                   << std::endl;
       });
 
-  server.SetOnClientDisconnected([&server](uint64_t conn_id) {
-    std::cout << "\n[-] Client disconnected: " << conn_id << std::endl;
+  server.SetOnClientDisconnected([&server](const ConnectionPtr& conn) {
+    std::cout << "\n[-] Client disconnected: " << conn->connection_id() << std::endl;
     std::cout << "    Total connections: " << server.GetConnectionCount()
               << std::endl;
   });
 
-  server.SetOnError([](uint64_t conn_id, const std::string &error) {
-    std::cerr << "\n[!] Connection error " << conn_id << ": " << error
+  server.SetOnError([](const ConnectionPtr& conn, const std::string &error) {
+    std::cerr << "\n[!] Connection error " << conn->connection_id() << ": " << error
               << std::endl;
   });
 

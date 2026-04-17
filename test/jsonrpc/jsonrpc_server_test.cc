@@ -58,15 +58,15 @@ TEST(JsonRpcServer, SetCallbacks) {
   bool connected = false;
   bool disconnected = false;
 
-  server.SetOnClientConnected([&](uint64_t, const ConnectionInformation&) {
+  server.SetOnClientConnected([&](const ConnectionPtr&) {
     connected = true;
   });
 
-  server.SetOnClientDisconnected([&](uint64_t) {
+  server.SetOnClientDisconnected([&](const ConnectionPtr&) {
     disconnected = true;
   });
 
-  server.SetOnError([&](uint64_t, const std::string&) {});
+  server.SetOnError([&](const ConnectionPtr&, const std::string&) {});
 
   // 回调设置成功
   EXPECT_TRUE(true);

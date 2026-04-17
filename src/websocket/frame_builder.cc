@@ -20,12 +20,22 @@ std::vector<uint8_t> FrameBuilder::CreateBinaryFrame(
 
 std::vector<uint8_t> FrameBuilder::CreatePingFrame(
     const std::vector<uint8_t>& payload) {
-  return BuildFrame(OpCode::kPing, payload);
+  // RFC6455: 控制帧载荷必须 <= 125 字节
+  std::vector<uint8_t> trimmed_payload = payload;
+  if (trimmed_payload.size() > 125) {
+    trimmed_payload.resize(125);
+  }
+  return BuildFrame(OpCode::kPing, trimmed_payload);
 }
 
 std::vector<uint8_t> FrameBuilder::CreatePongFrame(
     const std::vector<uint8_t>& payload) {
-  return BuildFrame(OpCode::kPong, payload);
+  // RFC6455: 控制帧载荷必须 <= 125 字节
+  std::vector<uint8_t> trimmed_payload = payload;
+  if (trimmed_payload.size() > 125) {
+    trimmed_payload.resize(125);
+  }
+  return BuildFrame(OpCode::kPong, trimmed_payload);
 }
 
 std::vector<uint8_t> FrameBuilder::CreateCloseFrame(uint16_t code,
@@ -37,9 +47,14 @@ std::vector<uint8_t> FrameBuilder::CreateCloseFrame(uint16_t code,
   payload.push_back(static_cast<uint8_t>((code >> 8) & 0xFF));
   payload.push_back(static_cast<uint8_t>(code & 0xFF));
 
-  // 写入原因
+  // 写入原因（RFC6455: 控制帧载荷必须 <= 125 字节，2 字节 code + reason <= 123）
+  constexpr size_t kMaxReasonLength = 123;
   if (!reason.empty()) {
-    payload.insert(payload.end(), reason.begin(), reason.end());
+    auto end = reason.end();
+    if (reason.size() > kMaxReasonLength) {
+      end = reason.begin() + kMaxReasonLength;
+    }
+    payload.insert(payload.end(), reason.begin(), end);
   }
 
   return BuildFrame(OpCode::kClose, payload);

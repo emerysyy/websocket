@@ -123,3 +123,13 @@ TEST(RequestHandler, WrongJsonrpcVersion) {
   json parsed = json::parse(response);
   EXPECT_EQ(parsed["error"]["code"], -32600);
 }
+
+TEST(RequestHandler, EmptyBatch) {
+  RequestHandler handler;
+  // JSON-RPC 2.0: 空批量请求必须返回 Invalid Request 错误
+  std::string request = "[]";
+  std::string response = handler.HandleRequest(request);
+
+  json parsed = json::parse(response);
+  EXPECT_EQ(parsed["error"]["code"], -32600);
+}

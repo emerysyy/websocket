@@ -24,6 +24,11 @@ std::string RequestHandler::HandleRequest(const std::string& request) {
 
   // 批量请求
   if (request_json.is_array()) {
+    // JSON-RPC 2.0: 空批量请求必须返回 Invalid Request 错误
+    if (request_json.empty()) {
+      return CreateErrorResponse(JsonRpcError::kInvalidRequest,
+                                "Invalid Request: empty batch").dump();
+    }
     auto responses = HandleBatch(request_json);
     if (responses.empty()) {
       return "";  // 全部是通知

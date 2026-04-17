@@ -22,6 +22,7 @@ set_target_properties(websocket_lib PROPERTIES
 target_link_libraries(websocket_lib
     PUBLIC
         pthread
+        darwincore_network
 )
 
 # 设置包含路径

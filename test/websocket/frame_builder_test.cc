@@ -112,3 +112,35 @@ TEST(FrameBuilder, EmptyPayload) {
   EXPECT_EQ(frame[0], 0x81);
   EXPECT_EQ(frame[1], 0);  // Empty payload
 }
+
+TEST(FrameBuilder, CloseFrameTruncatesLongReason) {
+  // RFC6455: 控制帧载荷必须 <= 125 字节
+  // Close 帧: 2 字节 code + reason <= 125, 所以 reason <= 123
+  std::string long_reason(200, 'x');
+  auto frame = FrameBuilder::CreateCloseFrame(1000, long_reason);
+
+  ASSERT_GE(frame.size(), 4);
+  EXPECT_EQ(frame[0], 0x88);  // FIN + Close
+  // 载荷 = 2 (code) + 123 (truncated reason) = 125
+  EXPECT_EQ(frame[1], 125);
+}
+
+TEST(FrameBuilder, PingFrameTruncatesLongPayload) {
+  // RFC6455: 控制帧载荷必须 <= 125 字节
+  std::vector<uint8_t> long_payload(200, 'x');
+  auto frame = FrameBuilder::CreatePingFrame(long_payload);
+
+  ASSERT_GE(frame.size(), 2);
+  EXPECT_EQ(frame[0], 0x89);  // FIN + Ping
+  EXPECT_EQ(frame[1], 125);  // Truncated to 125
+}
+
+TEST(FrameBuilder, PongFrameTruncatesLongPayload) {
+  // RFC6455: 控制帧载荷必须 <= 125 字节
+  std::vector<uint8_t> long_payload(200, 'x');
+  auto frame = FrameBuilder::CreatePongFrame(long_payload);
+
+  ASSERT_GE(frame.size(), 2);
+  EXPECT_EQ(frame[0], 0x8A);  // FIN + Pong
+  EXPECT_EQ(frame[1], 125);  // Truncated to 125
+}
