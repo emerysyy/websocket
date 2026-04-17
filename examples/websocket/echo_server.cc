@@ -6,21 +6,27 @@
 
 #include <csignal>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
-#include "darwincore/network/server.h"
-#include "darwincore/websocket/frame_parser.h"
-#include "darwincore/websocket/frame_builder.h"
-
-using namespace darwincore::websocket;
+#include <darwincore/network/server.h>
+#include <darwincore/websocket/frame_parser.h>
+#include <darwincore/websocket/frame_builder.h>
 
 struct ConnectionContext {
-    std::unique_ptr<FrameParser> parser;
-    bool connected = false;
+    std::unique_ptr<darwincore::websocket::FrameParser> parser;
+    std::vector<uint8_t> recv_buffer;
 };
 
-DarwinCore::Server* g_server = nullptr;
+darwincore::network::Server* g_server = nullptr;
 volatile sig_atomic_t g_running = 1;
+
+// 连接上下文表（简化版，没有 EventLoopGroup）
+std::unordered_map<uint64_t, std::shared_ptr<ConnectionContext>> g_connections;
+std::mutex g_connections_mutex;
 
 void SignalHandler(int) { g_running = 0; }
 
@@ -33,31 +39,35 @@ int main() {
     std::cout << "  Pure WebSocket Echo Server" << std::endl;
     std::cout << "========================================" << std::endl;
 
-    DarwinCore::Server server;
+    darwincore::network::Server server;
     g_server = &server;
 
+    using namespace darwincore::websocket;
+
     // 连接回调
-    server.SetOnClientConnected([](const DarwinCore::ConnectionInformation& info) {
+    server.SetOnClientConnected([](const darwincore::network::ConnectionInformation& info) {
         std::cout << "[+] Connected: " << info.connection_id
-                  << " from " << info.peer_address << ":" << info.peer_port
-                  << std::endl;
+                  << " from " << info.peer_address << std::endl;
 
         auto ctx = std::make_shared<ConnectionContext>();
         ctx->parser = std::make_unique<FrameParser>();
-        ctx->connected = true;
-        info.connection->SetContext(ctx);
-    });
 
-    server.SetOnClientDisconnected([](const DarwinCore::ConnectionInformation& info) {
-        std::cout << "[-] Disconnected: " << info.connection_id << std::endl;
+        std::lock_guard<std::mutex> lock(g_connections_mutex);
+        g_connections[info.connection_id] = ctx;
     });
 
     // 消息回调
-    server.SetOnMessage([](const DarwinCore::ConnectionInformation& info,
+    server.SetOnMessage([](uint64_t connection_id,
                            const std::vector<uint8_t>& data) {
-        auto ctx = std::static_pointer_cast<ConnectionContext>(
-            info.connection->GetContext());
-        if (!ctx || !ctx->connected) return;
+        std::shared_ptr<ConnectionContext> ctx;
+        {
+            std::lock_guard<std::mutex> lock(g_connections_mutex);
+            auto it = g_connections.find(connection_id);
+            if (it != g_connections.end()) {
+                ctx = it->second;
+            }
+        }
+        if (!ctx) return;
 
         // 追加到缓冲区
         ctx->recv_buffer.insert(ctx->recv_buffer.end(), data.begin(), data.end());
@@ -76,32 +86,41 @@ int main() {
             // 处理帧
             switch (frame->opcode) {
                 case OpCode::kText:
-                case OpCode::kBinary:
+                case OpCode::kBinary: {
                     // 回显：发送相同数据
-                    info.connection->Send(frame->payload.data(),
-                                           frame->payload.size());
+                    auto response = FrameBuilder::BuildFrame(
+                        frame->opcode, frame->payload);
+                    g_server->SendData(connection_id, response.data(), response.size());
                     std::cout << "[ECHO] " << frame->payload.size() << " bytes" << std::endl;
                     break;
-
-                case OpCode::kPing:
+                }
+                case OpCode::kPing: {
                     // 回复 Pong
-                    info.connection->Send(FrameBuilder::CreatePongFrame(frame->payload));
+                    auto pong = FrameBuilder::BuildFrame(
+                        OpCode::kPong, frame->payload);
+                    g_server->SendData(connection_id, pong.data(), pong.size());
                     break;
-
+                }
                 case OpCode::kPong:
-                    // 不需要处理
                     break;
-
-                case OpCode::kClose:
-                    // 发送 Close 响应并关闭
-                    info.connection->Send(FrameBuilder::CreateCloseFrame());
-                    info.connection->Close();
+                case OpCode::kClose: {
+                    // 发送 Close 响应
+                    auto close = FrameBuilder::CreateCloseFrame(1000, "");
+                    g_server->SendData(connection_id, close.data(), close.size());
                     break;
-
+                }
                 default:
                     break;
             }
         }
+    });
+
+    // 断开回调
+    server.SetOnClientDisconnected([](uint64_t connection_id) {
+        std::cout << "[-] Disconnected: " << connection_id << std::endl;
+
+        std::lock_guard<std::mutex> lock(g_connections_mutex);
+        g_connections.erase(connection_id);
     });
 
     // 启动服务器
