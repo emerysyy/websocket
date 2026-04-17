@@ -106,8 +106,8 @@ void JsonRpcServer::BroadcastNotification(const std::string& method,
   {
     std::lock_guard<std::mutex> lock(connections_mutex_);
     for (auto& [id, conn] : connections_) {
-      auto* ctx = GetContext(conn);
-      if (ctx && ctx->phase == ConnectionPhase::kWebSocket) {
+      // 只对已建立 WebSocket 连接的客户端广播
+      if (conn->phase() == SessionPhase::kWebSocket && conn->IsConnected()) {
         connections.push_back(conn);
       }
     }
@@ -133,6 +133,10 @@ void JsonRpcServer::CloseConnectionInternal(const ConnectionPtr& conn,
                                             uint16_t code,
                                             const std::string& reason) {
   if (!conn) return;
+  if (conn->is_closing()) return;  // 幂等性保护
+
+  conn->set_closing(true);
+  conn->set_phase(SessionPhase::kClosing);
 
   auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
   network_server_->SendData(conn->connection_id(),
@@ -163,28 +167,6 @@ void JsonRpcServer::SetOnError(
   on_error_ = std::move(callback);
 }
 
-ConnectionContext* JsonRpcServer::GetOrCreateContext(const ConnectionPtr& conn) {
-  if (!conn) return nullptr;
-
-  auto* ctx = conn->GetSessionState();
-  if (ctx) {
-    return ctx;
-  }
-
-  // 创建新上下文并绑定到 Connection
-  ConnectionContext new_ctx;
-  new_ctx.phase = ConnectionPhase::kHandshake;
-  new_ctx.connection_id = conn->connection_id();
-  conn->SetContext(std::make_any<ConnectionContext>(new_ctx));
-
-  return conn->GetSessionState();
-}
-
-ConnectionContext* JsonRpcServer::GetContext(const ConnectionPtr& conn) {
-  if (!conn) return nullptr;
-  return conn->GetSessionState();
-}
-
 ConnectionPtr JsonRpcServer::GetConnection(uint64_t connection_id) {
   std::lock_guard<std::mutex> lock(connections_mutex_);
   auto it = connections_.find(connection_id);
@@ -196,17 +178,10 @@ ConnectionPtr JsonRpcServer::GetConnection(uint64_t connection_id) {
 
 void JsonRpcServer::OnNetworkConnected(
     const darwincore::network::ConnectionInformation& info) {
-  // 创建连接包装器
-  auto conn = std::make_shared<Connection>(info.connection_id);
+  // 创建连接包装器（继承 WebSocketSession，会话状态在 Connection 自身）
+  auto conn = std::make_shared<Connection>(info.connection_id, info.peer_address);
 
-  // 创建会话状态
-  ConnectionContext ctx;
-  ctx.phase = ConnectionPhase::kHandshake;
-  ctx.connection_id = info.connection_id;
-  ctx.remote_address = info.peer_address;
-  conn->SetContext(std::make_any<ConnectionContext>(ctx));
-
-  // 加入连接映射
+  // 加入连接映射（仅用于 id → ConnectionPtr 的反向查找）
   {
     std::lock_guard<std::mutex> lock(connections_mutex_);
     connections_[info.connection_id] = conn;
@@ -223,15 +198,12 @@ void JsonRpcServer::OnNetworkMessage(uint64_t connection_id,
   auto conn = GetConnection(connection_id);
   if (!conn) return;
 
-  auto* ctx = GetOrCreateContext(conn);
-  if (!ctx) return;
-
   // 追加数据到接收缓冲区
-  size_t current_size = ctx->recv_buffer.size();
+  size_t current_size = conn->recv_buffer().size();
   size_t new_size = current_size + data.size();
 
   bool size_valid;
-  if (ctx->phase == ConnectionPhase::kHandshake) {
+  if (conn->phase() == SessionPhase::kHandshake) {
     size_valid = IsHandshakeSizeValid(new_size);
   } else {
     size_valid = (new_size <= kMaxWebSocketFrameSize);
@@ -242,22 +214,52 @@ void JsonRpcServer::OnNetworkMessage(uint64_t connection_id,
     return;
   }
 
-  ctx->recv_buffer.insert(ctx->recv_buffer.end(), data.begin(), data.end());
+  conn->recv_buffer().insert(conn->recv_buffer().end(), data.begin(), data.end());
 
-  // 处理数据
-  if (ctx->phase == ConnectionPhase::kHandshake) {
-    size_t header_end = FindHttpRequestEnd(ctx->recv_buffer);
+  // 根据阶段处理数据
+  if (conn->phase() == SessionPhase::kHandshake) {
+    // 处理 HTTP 握手请求
+    size_t header_end = FindHttpRequestEnd(conn->recv_buffer());
     if (header_end != std::string::npos) {
-      std::string request(reinterpret_cast<const char*>(ctx->recv_buffer.data()),
+      std::string request(reinterpret_cast<const char*>(conn->recv_buffer().data()),
                          header_end + 4);
       HandleHandshake(conn, request);
       // 移除已处理的握手数据
-      ctx->recv_buffer.erase(ctx->recv_buffer.begin(),
-                            ctx->recv_buffer.begin() + header_end + 4);
+      conn->recv_buffer().erase(conn->recv_buffer().begin(),
+                                conn->recv_buffer().begin() + header_end + 4);
     }
-  } else {
-    // 处理 WebSocket 帧 - 使用 FrameParser
-    // 注意：简化处理，实际需要完整解析
+  } else if (conn->phase() == SessionPhase::kWebSocket) {
+    // 处理 WebSocket 帧
+    ProcessWebSocketFrames(conn);
+  }
+}
+
+void JsonRpcServer::ProcessWebSocketFrames(const ConnectionPtr& conn) {
+  if (!conn || conn->recv_buffer().empty()) return;
+
+  FrameParser* parser = conn->parser();
+  if (!parser) return;
+
+  // 循环解析所有完整的帧
+  while (!conn->recv_buffer().empty()) {
+    size_t consumed = 0;
+    auto frame_opt = parser->Parse(conn->recv_buffer(), consumed);
+
+    if (!frame_opt) {
+      // 数据不完整，等待更多数据
+      break;
+    }
+
+    // 移除已解析的帧数据
+    conn->consume_recv_buffer(consumed);
+
+    // 处理帧
+    HandleWebSocketFrame(conn, *frame_opt);
+
+    // 如果连接已关闭，停止处理
+    if (!conn->IsConnected() || conn->phase() == SessionPhase::kClosed) {
+      break;
+    }
   }
 }
 
@@ -274,6 +276,7 @@ void JsonRpcServer::OnNetworkDisconnected(uint64_t connection_id) {
 
   if (conn) {
     conn->set_connected(false);
+    conn->set_phase(SessionPhase::kClosed);
     if (on_disconnected_) {
       on_disconnected_(conn);
     }
@@ -302,11 +305,8 @@ void JsonRpcServer::HandleHandshake(const ConnectionPtr& conn,
                            reinterpret_cast<const uint8_t*>(response.data()),
                            response.size());
 
-  // 更新会话阶段（直接操作 Connection::context_ 中的 ConnectionContext）
-  auto* ctx = GetContext(conn);
-  if (ctx) {
-    ctx->phase = ConnectionPhase::kWebSocket;
-  }
+  // 更新会话阶段
+  conn->set_phase(SessionPhase::kWebSocket);
 }
 
 void JsonRpcServer::HandleWebSocketFrame(const ConnectionPtr& conn,
@@ -326,10 +326,17 @@ void JsonRpcServer::HandleWebSocketFrame(const ConnectionPtr& conn,
       break;
     }
     case OpCode::kPong: {
+      // Pong 帧不需要处理
       break;
     }
     case OpCode::kClose: {
-      CloseConnection(conn, 1000, "Connection closed");
+      // 收到 Close 帧，优雅关闭
+      CloseConnection(conn, 1000, "Connection closed by client");
+      break;
+    }
+    case OpCode::kContinuation: {
+      // 分片帧的中间或结束帧
+      // 简化处理：直接追加到上次消息
       break;
     }
     default:

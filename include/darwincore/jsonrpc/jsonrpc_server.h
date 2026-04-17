@@ -20,7 +20,9 @@
 #include <darwincore/network/server.h>
 
 #include "darwincore/websocket/frame_builder.h"
+#include "darwincore/websocket/frame_parser.h"
 #include "darwincore/websocket/handshake_handler.h"
+#include "darwincore/websocket/session.h"
 #include "darwincore/jsonrpc/notification_builder.h"
 #include "darwincore/jsonrpc/request_handler.h"
 
@@ -28,63 +30,46 @@ namespace darwincore {
 namespace websocket {
 
 /**
- * @brief 连接阶段
- */
-enum class ConnectionPhase {
-  kHandshake,
-  kWebSocket,
-};
-
-/**
- * @brief 连接上下文（存储在 std::any 中）
- *
- * 遵循架构原则：会话状态挂在连接上。
- * 每个 Connection 对象持有一个 ConnectionContext，存储该连接的协议状态。
- */
-struct ConnectionContext {
-  ConnectionPhase phase = ConnectionPhase::kHandshake;
-  std::vector<uint8_t> recv_buffer;
-  size_t processed_offset = 0;
-  uint64_t connection_id = 0;
-  std::string remote_address;
-};
-
-/**
  * @brief 连接包装器（业务层使用）
  *
- * 封装 connection_id，提供更高层的抽象。
- * 将来 DarwinCore 支持 ConnectionPtr 时可直接替换。
+ * 封装 connection_id，继承 WebSocketSession 提供会话状态管理。
+ * 会话状态挂在 Connection 自身（通过继承 WebSocketSession），
+ * 不维护全局连接表。
+ *
+ * 遵循架构原则：
+ * - 一个连接对应一个 session
+ * - session 状态挂在 Connection 上
  */
-class Connection final {
+class Connection final : public WebSocketSession {
  public:
-  explicit Connection(uint64_t id) : connection_id_(id) {}
+  explicit Connection(uint64_t id, const std::string& remote_addr = "")
+      : WebSocketSession(), connection_id_(id), remote_address_(remote_addr) {
+    set_phase(SessionPhase::kHandshake);
+  }
 
   uint64_t connection_id() const { return connection_id_; }
+  const std::string& remote_address() const { return remote_address_; }
   bool IsConnected() const { return connected_; }
   void set_connected(bool connected) { connected_ = connected; }
 
-  // 上下文管理（std::any 存储会话状态）
-  void SetContext(std::any ctx) { context_ = std::move(ctx); }
-  std::any& GetContext() { return context_; }
-  const std::any& GetContext() const { return context_; }
+  // 接收缓冲区（跨帧缓冲未完整数据）
+  std::vector<uint8_t>& recv_buffer() { return recv_buffer_; }
+  const std::vector<uint8_t>& recv_buffer() const { return recv_buffer_; }
 
-  // 获取会话状态
-  ConnectionContext* GetSessionState() {
-    return std::any_cast<ConnectionContext>(&context_);
-  }
-
-  // 设置会话状态
-  void SetSessionState(ConnectionPhase phase) {
-    ConnectionContext ctx;
-    ctx.phase = phase;
-    ctx.connection_id = connection_id_;
-    context_ = std::make_any<ConnectionContext>(ctx);
+  // 移除已处理的字节
+  void consume_recv_buffer(size_t bytes) {
+    if (bytes >= recv_buffer_.size()) {
+      recv_buffer_.clear();
+    } else {
+      recv_buffer_.erase(recv_buffer_.begin(), recv_buffer_.begin() + bytes);
+    }
   }
 
  private:
   uint64_t connection_id_;
+  std::string remote_address_;
   bool connected_ = true;
-  std::any context_;
+  std::vector<uint8_t> recv_buffer_;  // 跨帧缓冲
 };
 
 /**
@@ -177,9 +162,9 @@ class JsonRpcServer {
   void SetOnError(std::function<void(const ConnectionPtr&, const std::string&)> callback);
 
  private:
-  // 辅助 - 操作 Connection::context_ 中的 ConnectionContext
-  ConnectionContext* GetOrCreateContext(const ConnectionPtr& conn);
-  ConnectionContext* GetContext(const ConnectionPtr& conn);
+  // 辅助 - 通过 connection_id 查找 ConnectionPtr
+  // 注意：connections_ 只用于 id → ConnectionPtr 的反向查找
+  // 会话状态挂在 Connection 自身（继承 WebSocketSession）
   ConnectionPtr GetConnection(uint64_t connection_id);
   size_t FindHttpRequestEnd(const std::vector<uint8_t>& buffer);
   bool IsHandshakeSizeValid(size_t size);
@@ -196,6 +181,7 @@ class JsonRpcServer {
 
   // 协议处理
   void HandleHandshake(const ConnectionPtr& conn, const std::string& data);
+  void ProcessWebSocketFrames(const ConnectionPtr& conn);
   void HandleWebSocketFrame(const ConnectionPtr& conn, const Frame& frame);
   void HandleJsonRpcRequest(const ConnectionPtr& conn, const std::string& request);
   bool SendWebSocketFrame(const ConnectionPtr& conn,
