@@ -37,14 +37,53 @@ cd build
 ./test/run_tests --gtest_filter=FrameParserTest.ParseSimpleTextFrame
 ```
 
-## 运行示例
+## 示例程序
 
-```bash
-cd build
-./examples/simple_server
+### 目录结构
+
+```
+examples/
+├── websocket/              # WebSocket 示例
+│   ├── echo_server.cc      # WebSocket 回显服务器
+│   └── frame_test.html     # 浏览器帧测试工具
+├── jsonrpc/                # JSON-RPC 示例
+│   ├── simple_server.cc    # JSON-RPC 服务器
+│   ├── client.html         # 浏览器客户端
+│   └── nodejs-client/      # Node.js 客户端
 ```
 
-服务器默认监听 `ws://127.0.0.1:9998`。
+### 构建
+
+```bash
+# 启用 examples 构建
+cmake .. -DCMAKE_BUILD_EXAMPLES=ON
+make -j$(sysctl -n hw.ncpu)
+```
+
+### 运行
+
+**WebSocket 回显服务器：**
+```bash
+./examples/websocket/echo_server
+# 监听 ws://127.0.0.1:8080/echo
+# 使用 frame_test.html 测试
+```
+
+**JSON-RPC 服务器：**
+```bash
+./examples/jsonrpc/simple_server
+# 监听 ws://127.0.0.1:8080/jsonrpc
+```
+
+**浏览器客户端：**
+- WebSocket: 直接打开 `examples/websocket/frame_test.html`
+- JSON-RPC: 直接打开 `examples/jsonrpc/client.html`
+
+**Node.js 客户端：**
+```bash
+cd examples/jsonrpc/nodejs-client
+node client.js
+```
 
 ## 参考顺序
 
