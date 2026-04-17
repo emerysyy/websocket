@@ -143,6 +143,9 @@ void JsonRpcServer::CloseConnectionInternal(const ConnectionPtr& conn,
                            close_frame.data(),
                            close_frame.size());
 
+  // 保存连接 ID 用于回调
+  uint64_t conn_id = conn->connection_id();
+
   // 从连接映射中移除
   {
     std::lock_guard<std::mutex> lock(connections_mutex_);
@@ -150,6 +153,11 @@ void JsonRpcServer::CloseConnectionInternal(const ConnectionPtr& conn,
   }
 
   conn->set_connected(false);
+
+  // 调用断开回调（使用保存的 conn 对象）
+  if (on_disconnected_) {
+    on_disconnected_(conn);
+  }
 }
 
 void JsonRpcServer::SetOnClientConnected(
