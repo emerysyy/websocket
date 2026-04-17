@@ -132,3 +132,71 @@ TEST(FrameParser, IncompleteFrame) {
 
   EXPECT_FALSE(frame.has_value());
 }
+
+// RFC 6455 5.4: 控制帧不能被分片
+TEST(FrameParser, RejectFragmentedControlFrame) {
+  // 构造 FIN=0 的 Ping 帧 (分片的控制帧，违反协议)
+  std::vector<uint8_t> fragmented_ping = {
+    0x09,  // FIN=0, Opcode=0x9 (Ping)
+    0x04,  // MASK=0, length=4
+    0x70, 0x69, 0x6e, 0x67  // "ping"
+  };
+
+  FrameParser parser;
+  size_t consumed = 0;
+
+  EXPECT_THROW({
+    auto frame = parser.Parse(fragmented_ping, consumed);
+  }, ParseError);
+
+  EXPECT_EQ(parser.GetLastConstraintError(), ParseError::kFragmentedControlFrame);
+}
+
+// RFC 6455 5.5: 控制帧 payload 不能超过 125 字节
+TEST(FrameParser, RejectControlFrameTooLarge) {
+  // 构造 payload=126 字节的 Ping 帧 (超过 125 限制)
+  std::vector<uint8_t> oversized_ping = {
+    0x89,  // FIN=1, Opcode=0x9 (Ping)
+    0x7E,  // MASK=0, length=126 (extended length)
+    0x00, 0x7E  // 126 in big-endian
+    // + 126 字节 payload
+  };
+  oversized_ping.insert(oversized_ping.end(), 126, 0x41);
+
+  FrameParser parser;
+  size_t consumed = 0;
+
+  EXPECT_THROW({
+    auto frame = parser.Parse(oversized_ping, consumed);
+  }, ParseError);
+
+  EXPECT_EQ(parser.GetLastConstraintError(), ParseError::kControlFrameTooLarge);
+}
+
+// 有效的 Ping 帧 (payload <= 125 字节)
+TEST(FrameParser, ValidPingFrame) {
+  std::vector<uint8_t> ping_data = FrameBuilder::CreatePingFrame();
+
+  FrameParser parser;
+  size_t consumed = 0;
+  auto ping = parser.Parse(ping_data, consumed);
+
+  ASSERT_TRUE(ping.has_value());
+  EXPECT_EQ(ping->opcode, OpCode::kPing);
+  EXPECT_TRUE(ping->fin);  // FIN 必须为 1
+  EXPECT_LE(ping->payload_length, 125);  // payload <= 125
+}
+
+// 有效的 Close 帧 (payload <= 125 字节)
+TEST(FrameParser, ValidCloseFrame) {
+  std::vector<uint8_t> close_data = FrameBuilder::CreateCloseFrame(1000, "Normal close");
+
+  FrameParser parser;
+  size_t consumed = 0;
+  auto close = parser.Parse(close_data, consumed);
+
+  ASSERT_TRUE(close.has_value());
+  EXPECT_EQ(close->opcode, OpCode::kClose);
+  EXPECT_TRUE(close->fin);  // FIN 必须为 1
+  EXPECT_LE(close->payload_length, 125);
+}

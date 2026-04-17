@@ -8,6 +8,9 @@
 namespace darwincore {
 namespace websocket {
 
+// RFC 6455 5.5: 控制帧 payload 不能超过 125 字节
+constexpr uint64_t kMaxControlPayloadLength = 125;
+
 std::optional<Frame> FrameParser::Parse(const std::vector<uint8_t>& data,
                                         size_t& consumed) {
   consumed = 0;
@@ -41,6 +44,9 @@ std::optional<Frame> FrameParser::Parse(const std::vector<uint8_t>& data,
     return std::nullopt;
   }
 
+  // RFC 6455 协议约束校验
+  ValidateControlFrameConstraints(fin, opcode, payload_length);
+
   // 提取载荷数据
   std::vector<uint8_t> payload;
   if (payload_length > 0) {
@@ -66,6 +72,26 @@ std::optional<Frame> FrameParser::Parse(const std::vector<uint8_t>& data,
   frame.payload = std::move(payload);
 
   return frame;
+}
+
+void FrameParser::ValidateControlFrameConstraints(bool fin, OpCode opcode,
+                                                  uint64_t payload_length) const {
+  // 检查是否是控制帧
+  if (!IsControlFrame(opcode)) {
+    return;  // 非控制帧无需校验
+  }
+
+  // RFC 6455 5.4: 控制帧不能被分片 (FIN 必须为 1)
+  if (!fin) {
+    last_constraint_error_ = ParseError::kFragmentedControlFrame;
+    throw ParseError::kFragmentedControlFrame;
+  }
+
+  // RFC 6455 5.5: 控制帧 payload 不能超过 125 字节
+  if (payload_length > kMaxControlPayloadLength) {
+    last_constraint_error_ = ParseError::kControlFrameTooLarge;
+    throw ParseError::kControlFrameTooLarge;
+  }
 }
 
 bool FrameParser::IsComplete(const std::vector<uint8_t>& data) const {

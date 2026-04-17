@@ -133,7 +133,14 @@
             };
 
             ws.onmessage = (event) => {
-                log('收到帧: ' + event.data, 'receive');
+                // 处理文本和二进制数据
+                let data;
+                if (event.data instanceof ArrayBuffer) {
+                    data = 'Binary: ' + new TextDecoder().decode(event.data);
+                } else {
+                    data = event.data;
+                }
+                log('收到: ' + data, 'receive');
             };
 
             ws.onclose = (e) => {
@@ -165,8 +172,9 @@
                 log('未连接', 'error');
                 return;
             }
-            ws.send('PING');
-            log('发送 Ping', 'control');
+            // 浏览器不支持发送原生 Ping 帧，发送特殊文本请求服务器响应
+            ws.send('__PING__');
+            log('发送 Ping 请求', 'control');
         }
 
         function sendClose() {

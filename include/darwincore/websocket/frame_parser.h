@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace darwincore {
@@ -18,9 +19,24 @@ enum class OpCode : uint8_t {
   kContinuation = 0x0,
   kText = 0x1,
   kBinary = 0x2,
+  // 0x3-0x7: 保留给非控制帧
   kClose = 0x8,
   kPing = 0x9,
   kPong = 0xA,
+  // 0xB-0xF: 保留给非控制帧
+};
+
+/**
+ * @brief WebSocket 帧解析错误类型
+ */
+enum class ParseError {
+  kNone = 0,
+  kFragmentedControlFrame,    // 控制帧不能被分片 (RFC 6455 5.4)
+  kControlFrameTooLarge,      // 控制帧 payload 不能超过 125 字节 (RFC 6455 5.5)
+  kInvalidOpCode,            // 无效的操作码 (RFC 6455 5.2)
+  kReservedBitSet,           // RSV1/RSV2/RSV3 必须为 0 (RFC 6455 5.2)
+  kIncompleteFrame,         // 数据不完整
+  kMaskedServerFrame,       // 服务端到服务端帧不能掩码 (RFC 6455 5.1)
 };
 
 /**
@@ -40,6 +56,7 @@ struct Frame {
  *
  * 将原始字节流解析成 WebSocket 帧。
  * 支持 RFC 6455 定义的所有帧类型。
+ * 解析时自动校验控制帧协议约束。
  */
 class FrameParser {
  public:
@@ -50,7 +67,9 @@ class FrameParser {
    * @brief 解析 WebSocket 帧
    * @param data 输入数据（可能包含多个帧或部分帧）
    * @param consumed 输出参数，表示本次解析消耗的字节数
-   * @return 如果数据完整，返回解析的 Frame；否则返回 nullopt
+   * @return 如果数据完整且协议正确，返回解析的 Frame
+   *         如果数据不完整，返回 nullopt（不算错误）
+   *         如果协议违规，抛出 ParseError 异常
    */
   std::optional<Frame> Parse(const std::vector<uint8_t>& data, size_t& consumed);
 
@@ -61,7 +80,32 @@ class FrameParser {
    */
   bool IsComplete(const std::vector<uint8_t>& data) const;
 
+  /**
+   * @brief 获取最近一次协议约束错误
+   * @return 错误类型
+   */
+  ParseError GetLastConstraintError() const { return last_constraint_error_; }
+
+  /**
+   * @brief 检查是否是控制帧 opcode
+   */
+  static bool IsControlFrame(OpCode opcode) {
+    return opcode == OpCode::kClose ||
+           opcode == OpCode::kPing ||
+           opcode == OpCode::kPong;
+  }
+
  private:
+  /**
+   * @brief 校验控制帧协议约束
+   * @param fin FIN 标志
+   * @param opcode 操作码
+   * @param payload_length 载荷长度
+   * @throw 如果违反协议约束，抛出 ParseError
+   */
+  void ValidateControlFrameConstraints(bool fin, OpCode opcode,
+                                       uint64_t payload_length) const;
+
   /**
    * @brief 解析帧头
    * @param data 输入数据
@@ -89,6 +133,9 @@ class FrameParser {
    * @param masking_key 4 字节掩码密钥
    */
   void Unmask(std::vector<uint8_t>& payload, const uint8_t* masking_key) const;
+
+  // 最近一次协议约束错误
+  mutable ParseError last_constraint_error_ = ParseError::kNone;
 };
 
 }  // namespace websocket

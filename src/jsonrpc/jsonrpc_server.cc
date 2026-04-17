@@ -237,11 +237,23 @@ void JsonRpcServer::OnNetworkMessage(uint64_t connection_id,
 void JsonRpcServer::ProcessWebSocketFrames(const ConnectionPtr& conn) {
   if (!conn || conn->recv_buffer().empty()) return;
 
+  // RFC 6455: 关闭中的连接不应再处理新帧
+  if (conn->is_closing() || conn->phase() == SessionPhase::kClosing ||
+      conn->phase() == SessionPhase::kClosed) {
+    return;
+  }
+
   FrameParser* parser = conn->parser();
   if (!parser) return;
 
   // 循环解析所有完整的帧
   while (!conn->recv_buffer().empty()) {
+    // 每个帧处理前检查关闭态
+    if (conn->is_closing() || conn->phase() == SessionPhase::kClosing ||
+        conn->phase() == SessionPhase::kClosed) {
+      break;
+    }
+
     size_t consumed = 0;
     auto frame_opt = parser->Parse(conn->recv_buffer(), consumed);
 
@@ -256,7 +268,7 @@ void JsonRpcServer::ProcessWebSocketFrames(const ConnectionPtr& conn) {
     // 处理帧
     HandleWebSocketFrame(conn, *frame_opt);
 
-    // 如果连接已关闭，停止处理
+    // 处理后再次检查关闭态
     if (!conn->IsConnected() || conn->phase() == SessionPhase::kClosed) {
       break;
     }
