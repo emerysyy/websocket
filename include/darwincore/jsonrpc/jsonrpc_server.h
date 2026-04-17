@@ -38,7 +38,8 @@ enum class ConnectionPhase {
 /**
  * @brief 连接上下文（存储在 std::any 中）
  *
- * 遵循架构原则：会话状态挂在连接上，不维护全局连接表。
+ * 遵循架构原则：会话状态挂在连接上。
+ * 每个 Connection 对象持有一个 ConnectionContext，存储该连接的协议状态。
  */
 struct ConnectionContext {
   ConnectionPhase phase = ConnectionPhase::kHandshake;
@@ -176,16 +177,9 @@ class JsonRpcServer {
   void SetOnError(std::function<void(const ConnectionPtr&, const std::string&)> callback);
 
  private:
-  // 内部连接状态（挂在 Connection::context_ 上）
-  struct SessionState {
-    ConnectionPhase phase = ConnectionPhase::kHandshake;
-    std::vector<uint8_t> recv_buffer;
-    size_t processed_offset = 0;
-  };
-
-  // 辅助
-  SessionState* GetOrCreateSession(const ConnectionPtr& conn);
-  SessionState* GetSession(const ConnectionPtr& conn);
+  // 辅助 - 操作 Connection::context_ 中的 ConnectionContext
+  ConnectionContext* GetOrCreateContext(const ConnectionPtr& conn);
+  ConnectionContext* GetContext(const ConnectionPtr& conn);
   ConnectionPtr GetConnection(uint64_t connection_id);
   size_t FindHttpRequestEnd(const std::vector<uint8_t>& buffer);
   bool IsHandshakeSizeValid(size_t size);

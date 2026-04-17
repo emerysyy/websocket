@@ -106,8 +106,8 @@ void JsonRpcServer::BroadcastNotification(const std::string& method,
   {
     std::lock_guard<std::mutex> lock(connections_mutex_);
     for (auto& [id, conn] : connections_) {
-      auto* session = GetSession(conn);
-      if (session && session->phase == ConnectionPhase::kWebSocket) {
+      auto* ctx = GetContext(conn);
+      if (ctx && ctx->phase == ConnectionPhase::kWebSocket) {
         connections.push_back(conn);
       }
     }
@@ -163,26 +163,26 @@ void JsonRpcServer::SetOnError(
   on_error_ = std::move(callback);
 }
 
-JsonRpcServer::SessionState* JsonRpcServer::GetOrCreateSession(const ConnectionPtr& conn) {
+ConnectionContext* JsonRpcServer::GetOrCreateContext(const ConnectionPtr& conn) {
   if (!conn) return nullptr;
 
   auto* ctx = conn->GetSessionState();
   if (ctx) {
-    return reinterpret_cast<SessionState*>(ctx);
+    return ctx;
   }
 
-  // 创建新 session 并绑定到 Connection
+  // 创建新上下文并绑定到 Connection
   ConnectionContext new_ctx;
   new_ctx.phase = ConnectionPhase::kHandshake;
   new_ctx.connection_id = conn->connection_id();
   conn->SetContext(std::make_any<ConnectionContext>(new_ctx));
 
-  return reinterpret_cast<SessionState*>(conn->GetSessionState());
+  return conn->GetSessionState();
 }
 
-JsonRpcServer::SessionState* JsonRpcServer::GetSession(const ConnectionPtr& conn) {
+ConnectionContext* JsonRpcServer::GetContext(const ConnectionPtr& conn) {
   if (!conn) return nullptr;
-  return reinterpret_cast<SessionState*>(conn->GetSessionState());
+  return conn->GetSessionState();
 }
 
 ConnectionPtr JsonRpcServer::GetConnection(uint64_t connection_id) {
@@ -223,15 +223,15 @@ void JsonRpcServer::OnNetworkMessage(uint64_t connection_id,
   auto conn = GetConnection(connection_id);
   if (!conn) return;
 
-  auto* session = GetSession(conn);
-  if (!session) return;
+  auto* ctx = GetOrCreateContext(conn);
+  if (!ctx) return;
 
   // 追加数据到接收缓冲区
-  size_t current_size = session->recv_buffer.size();
+  size_t current_size = ctx->recv_buffer.size();
   size_t new_size = current_size + data.size();
 
   bool size_valid;
-  if (session->phase == ConnectionPhase::kHandshake) {
+  if (ctx->phase == ConnectionPhase::kHandshake) {
     size_valid = IsHandshakeSizeValid(new_size);
   } else {
     size_valid = (new_size <= kMaxWebSocketFrameSize);
@@ -242,18 +242,18 @@ void JsonRpcServer::OnNetworkMessage(uint64_t connection_id,
     return;
   }
 
-  session->recv_buffer.insert(session->recv_buffer.end(), data.begin(), data.end());
+  ctx->recv_buffer.insert(ctx->recv_buffer.end(), data.begin(), data.end());
 
   // 处理数据
-  if (session->phase == ConnectionPhase::kHandshake) {
-    size_t header_end = FindHttpRequestEnd(session->recv_buffer);
+  if (ctx->phase == ConnectionPhase::kHandshake) {
+    size_t header_end = FindHttpRequestEnd(ctx->recv_buffer);
     if (header_end != std::string::npos) {
-      std::string request(reinterpret_cast<const char*>(session->recv_buffer.data()),
+      std::string request(reinterpret_cast<const char*>(ctx->recv_buffer.data()),
                          header_end + 4);
       HandleHandshake(conn, request);
       // 移除已处理的握手数据
-      session->recv_buffer.erase(session->recv_buffer.begin(),
-                                session->recv_buffer.begin() + header_end + 4);
+      ctx->recv_buffer.erase(ctx->recv_buffer.begin(),
+                            ctx->recv_buffer.begin() + header_end + 4);
     }
   } else {
     // 处理 WebSocket 帧 - 使用 FrameParser
@@ -302,16 +302,10 @@ void JsonRpcServer::HandleHandshake(const ConnectionPtr& conn,
                            reinterpret_cast<const uint8_t*>(response.data()),
                            response.size());
 
-  // 更新会话阶段
-  auto* session = GetSession(conn);
-  if (session) {
-    session->phase = ConnectionPhase::kWebSocket;
-
-    // 更新 ConnectionContext
-    auto* ctx = conn->GetSessionState();
-    if (ctx) {
-      ctx->phase = ConnectionPhase::kWebSocket;
-    }
+  // 更新会话阶段（直接操作 Connection::context_ 中的 ConnectionContext）
+  auto* ctx = GetContext(conn);
+  if (ctx) {
+    ctx->phase = ConnectionPhase::kWebSocket;
   }
 }
 
