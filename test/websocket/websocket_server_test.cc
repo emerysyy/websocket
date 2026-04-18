@@ -126,6 +126,33 @@ TEST(WebSocketServer, CloseDoesNotTriggerImmediateDisconnect) {
   server.Stop();
 }
 
+// 测试 Close 后再 ForceClose 不应重复发送 Close 帧
+TEST(WebSocketServer, ForceCloseAfterCloseIsIdempotent) {
+  WebSocketServer server;
+  server.Start("127.0.0.1", 0);
+
+  int disconnect_count = 0;
+  server.SetOnDisconnected([&](const ConnectionPtr&) {
+    ++disconnect_count;
+  });
+
+  auto conn = server.AddTestConnection(305, "10.0.0.6:8080");
+
+  EXPECT_TRUE(server.Close(conn, 1000, "Normal closure"));
+  EXPECT_TRUE(conn->is_closing());
+
+  server.ForceClose(conn);
+  EXPECT_EQ(disconnect_count, 1);
+  EXPECT_FALSE(conn->IsConnected());
+  EXPECT_EQ(server.GetConnectionCount(), 0);
+
+  // 再次调用仍应保持幂等
+  server.ForceClose(conn);
+  EXPECT_EQ(disconnect_count, 1);
+
+  server.Stop();
+}
+
 // 测试 Broadcast 不包含正在关闭的连接
 TEST(WebSocketServer, BroadcastExcludesClosingConnections) {
   WebSocketServer server;

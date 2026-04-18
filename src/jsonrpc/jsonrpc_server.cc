@@ -142,7 +142,7 @@ void JsonRpcServer::HandleJsonRpcRequest(const ConnectionPtr& conn,
 
 bool JsonRpcServer::SendJsonRpcResponse(const ConnectionPtr& conn,
                                        const std::string& response) {
-  if (!conn || !conn->IsConnected()) {
+  if (!conn || !conn->IsConnected() || conn->is_closing()) {
     return false;
   }
 

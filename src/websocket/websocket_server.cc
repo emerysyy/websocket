@@ -145,15 +145,17 @@ void WebSocketServer::ForceClose(const ConnectionPtr& conn, uint16_t code,
     return;  // 已经是断开状态，幂等
   }
 
-  // 先标记为正在关闭，防止并发操作（如 Broadcast）再次处理此连接
-  conn->set_closing(true);
-
   auto connection_id = conn->connection_id();
 
-  // 发送 Close 帧通知对端
-  auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
-  network_server_->SendData(connection_id, close_frame.data(),
-                             close_frame.size());
+  const bool was_closing = conn->is_closing();
+  conn->set_closing(true);
+
+  // 已经处于 Close 流程时，不再重复发送 Close 帧
+  if (!was_closing) {
+    auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
+    network_server_->SendData(connection_id, close_frame.data(),
+                               close_frame.size());
+  }
 
   // 清理本地状态
   {
