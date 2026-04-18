@@ -137,10 +137,10 @@ json RequestHandler::CreateErrorResponse(int32_t code,
     }}
   };
 
-  if (id.has_value()) {
+  // JSON-RPC 2.0: 只有当 id 不为 null 时才包含在响应中
+  // request["id"] 可能返回 null，但 null id 表示无效请求
+  if (id.has_value() && !id->is_null()) {
     response["id"] = *id;
-  } else {
-    response["id"] = nullptr;
   }
 
   return response;

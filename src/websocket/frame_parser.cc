@@ -147,7 +147,17 @@ size_t FrameParser::ParseHeader(const std::vector<uint8_t>& data,
   uint8_t byte1 = data[1];
 
   out_fin = (byte0 & 0x80) != 0;
-  out_opcode = static_cast<OpCode>(byte0 & 0x0F);
+  uint8_t opcode_byte = byte0 & 0x0F;
+
+  // RFC 6455: 0x3-0x7 和 0xB-0xF 是保留的，收到应关闭连接
+  if (opcode_byte >= 0x3 && opcode_byte <= 0x7) {
+    return 0;  // 保留的非控制帧
+  }
+  if (opcode_byte >= 0xB && opcode_byte <= 0xF) {
+    return 0;  // 保留的非控制帧
+  }
+
+  out_opcode = static_cast<OpCode>(opcode_byte);
   out_masked = (byte1 & 0x80) != 0;
   uint64_t payload_len = byte1 & 0x7F;
 
