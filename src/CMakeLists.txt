@@ -3,6 +3,7 @@ set(SOURCES
     websocket/frame_parser.cc
     websocket/frame_builder.cc
     websocket/handshake_handler.cc
+    websocket/websocket_server.cc
     websocket/session.cc
     jsonrpc/jsonrpc_server.cc
     jsonrpc/request_handler.cc

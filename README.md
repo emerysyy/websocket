@@ -2,18 +2,66 @@
 
 基于 DarwinCore Network 的 WebSocket + JSON-RPC 项目。
 
-## 当前文档结构
+## 核心架构
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 应用层                                                    │
+│  WebSocketServer (用户入口)                              │
+├─────────────────────────────────────────────────────────┤
+│ 协议层                                                    │
+│  WebSocketServer, HandshakeHandler, FrameParser          │
+├─────────────────────────────────────────────────────────┤
+│ 会话层                                                    │
+│  Connection (继承 WebSocketSession)                     │
+├─────────────────────────────────────────────────────────┤
+│ 传输层                                                    │
+│  DarwinCore EventLoopGroup + Server                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+## 核心组件
+
+| 组件 | 说明 |
+|------|------|
+| **WebSocketServer** | WebSocket 统一入口，管理服务器生命周期、握手、帧路由 |
+| Connection | 连接封装，继承 WebSocketSession |
+| WebSocketSession | 会话状态基类 |
+| HandshakeHandler | HTTP Upgrade 握手处理 |
+| FrameParser | WebSocket 帧解析 |
+| FrameBuilder | WebSocket 帧构建 |
+
+## 文档结构
 
 - `docs/refactor/`：重构规格、迁移约束、验收标准
-- `docs/develop/`：按 `websocket`、`jsonrpc`、`build` 拆分的开发和测试文档
+- `docs/develop/websocket/`：WebSocket 开发文档
+- `docs/develop/jsonrpc/`：JSON-RPC 开发文档
 
-## 目标分层
+## 头文件
 
-- `include/darwincore/websocket/`：WebSocket 公开 API
-- `include/darwincore/jsonrpc/`：JSON-RPC 公开 API
-- `src/`：实现
-- `test/`：单元测试
-- `examples/`：示例程序
+```cpp
+#include <darwincore/websocket/websocket_server.h>
+```
+
+## 快速开始
+
+```cpp
+#include <darwincore/websocket/websocket_server.h>
+
+using namespace darwincore::websocket;
+
+WebSocketServer server;
+
+server.SetOnFrame([&server](const ConnectionPtr& conn, const Frame& frame) {
+    if (frame.opcode == OpCode::kText) {
+        std::string payload(frame.payload.begin(), frame.payload.end());
+        std::cout << "Received: " << payload << std::endl;
+        server.SendText(conn, "Echo: " + payload);
+    }
+});
+
+server.Start("0.0.0.0", 8080);
+```
 
 ## 构建
 

@@ -74,6 +74,10 @@ std::optional<Frame> FrameParser::Parse(const std::vector<uint8_t>& data,
   return frame;
 }
 
+void FrameParser::ValidateControlFrameConstraints(const Frame& frame) {
+  ValidateControlFrameConstraints(frame.fin, frame.opcode, frame.payload_length);
+}
+
 void FrameParser::ValidateControlFrameConstraints(bool fin, OpCode opcode,
                                                   uint64_t payload_length) const {
   // 检查是否是控制帧

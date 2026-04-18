@@ -96,6 +96,22 @@ class HandshakeHandler {
    */
   const std::string& NegotiatedProtocol() const;
 
+  /**
+   * @brief 尝试从缓冲区消费一个完整的握手请求
+   *
+   * 在缓冲区中查找 HTTP 头结束位置 (\r\n\r\n)。
+   * 如果找到完整请求，解析并生成响应。
+   * 如果请求不完整，返回 nullopt。
+   * 如果请求无效，返回错误响应。
+   *
+   * @param buffer 接收缓冲区（包含原始字节）
+   * @return 如果处理完成，返回 {consumed_bytes, response}
+   *         consumed_bytes = 0 表示请求不完整
+   *         response 为空表示无效请求（已自动发送错误响应）
+   */
+  std::optional<std::pair<size_t, std::string>> TryConsume(
+      const std::vector<uint8_t>& buffer);
+
  private:
   /**
    * @brief 生成 Sec-WebSocket-Accept 密钥

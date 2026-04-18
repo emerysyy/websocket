@@ -5,25 +5,47 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ 应用层                                                    │
-│  JsonRpcServer, RequestHandler, NotificationBuilder      │
+│  WebSocketServer (用户入口), JsonRpcServer               │
 ├─────────────────────────────────────────────────────────┤
 │ 协议层                                                    │
-│  HandshakeHandler, FrameParser, FrameBuilder             │
+│  WebSocketServer, HandshakeHandler, FrameParser          │
+│  FrameBuilder, JsonRpcServer                             │
 ├─────────────────────────────────────────────────────────┤
 │ 会话层                                                    │
-│  WebSocketSession (挂载在 Connection::context_)          │
+│  Connection (继承 WebSocketSession)                      │
 ├─────────────────────────────────────────────────────────┤
 │ 传输层                                                    │
 │  DarwinCore EventLoopGroup + Server                      │
 └─────────────────────────────────────────────────────────┘
 ```
 
+## 核心组件
+
+### WebSocketServer
+
+WebSocket 层的统一入口类，负责：
+- 服务器生命周期管理
+- HTTP Upgrade 握手处理
+- WebSocket 帧解析和路由
+- 连接管理
+
+**用户直接使用 WebSocketServer**，不需要直接操作底层网络组件。
+
+### Connection
+
+封装单个 WebSocket 连接，继承 `WebSocketSession`：
+- `connection_id()` - 连接 ID
+- `remote_address()` - 远程地址
+- `phase()` - 当前阶段
+- `parser()` - 帧解析器
+
 ## 核心原则
 
-- **一个连接对应一个 session**：每个 `Connection` 绑定一个 `WebSocketSession`（通过 `Connection::SetContext()`）
+- **WebSocketServer 是用户入口**：通过 WebSocketServer 管理所有连接
+- **一个连接对应一个 Connection**：每个 `Connection` 继承 `WebSocketSession`
 - **session 状态挂在 Connection 上**：不再维护全局连接表
 - **WebSocket 解析在 I/O 线程内完成**：不加额外锁
-- **发送使用 `conn->Send()`**：广播使用 `server_->Broadcast()` 或遍历连接集合
+- **发送使用 `server->SendFrame()`**：广播使用 `server->Broadcast()`
 
 ## 连接生命周期
 
@@ -59,19 +81,26 @@
 
 ```
 include/darwincore/websocket/
-├── jsonrpc_server.h
+├── websocket_server.h       # WebSocket 统一入口 [已完成]
+├── handshake_handler.h
 ├── frame_parser.h
-└── session.h                # 新增
+├── frame_builder.h
+└── session.h
 
-src/
-├── jsonrpc_server.cc
-└── frame_parser.cc
+src/websocket/
+├── websocket_server.cc      # WebSocket 统一入口 [已完成]
+├── handshake_handler.cc
+├── frame_parser.cc
+├── frame_builder.cc
+└── session.cc
 
-CMakeLists.txt
-test/
-├── test_jsonrpc_server_lifecycle.cc
-├── test_websocket_session.cc
-├── test_frame_parser_buffer.cc
-├── test_broadcast.cc
-└── test_graceful_shutdown.cc
+include/darwincore/jsonrpc/
+├── jsonrpc_server.h         # 建立在 WebSocketServer 之上
+└── ...
+
+test/websocket/
+├── test_websocket_server.cc  # 待新增
+├── test_handshake.cc
+├── test_frame_parser.cc
+└── test_frame_builder.cc
 ```

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <optional>
 #include <sstream>
 
 #ifdef __APPLE__
@@ -332,6 +333,33 @@ void HandshakeHandler::SetSupportedProtocols(const std::vector<std::string>& pro
 }
 
 const std::string& HandshakeHandler::NegotiatedProtocol() const { return negotiated_protocol_; }
+
+std::optional<std::pair<size_t, std::string>> HandshakeHandler::TryConsume(
+    const std::vector<uint8_t>& buffer) {
+  // 查找 HTTP 头结束位置 (\r\n\r\n)
+  static constexpr uint8_t kEnd[] = {'\r', '\n', '\r', '\n'};
+
+  auto it = std::search(buffer.begin(), buffer.end(),
+                        std::begin(kEnd), std::end(kEnd));
+  if (it == buffer.end()) {
+    // 请求不完整
+    return std::nullopt;
+  }
+
+  size_t http_len = static_cast<size_t>(it - buffer.begin()) + 4;  // +4 for \r\n\r\n
+
+  // 转换为字符串进行解析
+  std::string request(buffer.begin(), buffer.begin() + http_len);
+
+  // 解析握手请求
+  if (!ParseRequest(request)) {
+    // 请求无效，返回 {consumed, error_response}
+    return std::make_pair(http_len, GenerateErrorResponse(last_error_));
+  }
+
+  // 请求有效，返回 {consumed, success_response}
+  return std::make_pair(http_len, GenerateResponse());
+}
 
 #ifdef __APPLE__
 std::string HandshakeHandler::GenerateAcceptKey(const std::string& key) const {

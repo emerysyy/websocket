@@ -151,3 +151,63 @@ TEST(HandshakeHandler, RequestTooLarge) {
   EXPECT_FALSE(handler.ParseRequest(request));
   EXPECT_EQ(handler.GetLastError(), HandshakeError::kRequestTooLarge);
 }
+
+TEST(HandshakeHandler, TryConsumeIncomplete) {
+  HandshakeHandler handler;
+  std::vector<uint8_t> incomplete = {'G', 'E', 'T', ' '};
+
+  auto result = handler.TryConsume(incomplete);
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(HandshakeHandler, TryConsumeComplete) {
+  HandshakeHandler handler;
+  std::string request =
+      "GET / HTTP/1.1\r\n"
+      "Host: localhost\r\n"
+      "Upgrade: websocket\r\n"
+      "Connection: Upgrade\r\n"
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+      "Sec-WebSocket-Version: 13\r\n"
+      "\r\n";
+  std::vector<uint8_t> buffer(request.begin(), request.end());
+
+  auto result = handler.TryConsume(buffer);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->first, request.size());
+  EXPECT_TRUE(result->second.find("HTTP/1.1 101 Switching Protocols") != std::string::npos);
+}
+
+TEST(HandshakeHandler, TryConsumeWithTrailingData) {
+  HandshakeHandler handler;
+  std::string request =
+      "GET / HTTP/1.1\r\n"
+      "Host: localhost\r\n"
+      "Upgrade: websocket\r\n"
+      "Connection: Upgrade\r\n"
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+      "Sec-WebSocket-Version: 13\r\n"
+      "\r\n";
+  std::string trailing = "WEBSOCKET_FRAME_DATA";
+  std::vector<uint8_t> buffer(request.begin(), request.end());
+  buffer.insert(buffer.end(), trailing.begin(), trailing.end());
+
+  auto result = handler.TryConsume(buffer);
+  ASSERT_TRUE(result.has_value());
+  // 只消费 HTTP 头，保留后续 WebSocket 数据
+  EXPECT_EQ(result->first, request.size());
+}
+
+TEST(HandshakeHandler, TryConsumeInvalid) {
+  HandshakeHandler handler;
+  std::string request =
+      "POST / HTTP/1.1\r\n"
+      "Host: localhost\r\n"
+      "\r\n";
+  std::vector<uint8_t> buffer(request.begin(), request.end());
+
+  auto result = handler.TryConsume(buffer);
+  ASSERT_TRUE(result.has_value());
+  // 返回错误响应
+  EXPECT_TRUE(result->second.find("400 Bad Request") != std::string::npos);
+}

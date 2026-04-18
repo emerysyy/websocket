@@ -87,6 +87,17 @@ class FrameParser {
   ParseError GetLastConstraintError() const { return last_constraint_error_; }
 
   /**
+   * @brief 校验 WebSocket 帧的控制帧协议约束
+   * @param frame 要校验的帧
+   * @throw 如果违反协议约束，抛出 ParseError
+   *
+   * RFC 6455 约束：
+   * - 控制帧不能被分片 (FIN 必须为 1)
+   * - 控制帧 payload 不能超过 125 字节
+   */
+  void ValidateControlFrameConstraints(const Frame& frame);
+
+  /**
    * @brief 检查是否是控制帧 opcode
    */
   static bool IsControlFrame(OpCode opcode) {
@@ -97,7 +108,7 @@ class FrameParser {
 
  private:
   /**
-   * @brief 校验控制帧协议约束
+   * @brief 校验控制帧协议约束（内部版本）
    * @param fin FIN 标志
    * @param opcode 操作码
    * @param payload_length 载荷长度
