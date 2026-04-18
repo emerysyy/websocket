@@ -97,15 +97,32 @@ bool SendPing(const ConnectionPtr& conn,
 // 发送 Pong 帧
 bool SendPong(const ConnectionPtr& conn,
               const std::vector<uint8_t>& payload = {});
+```
 
-// 关闭连接
+### 关闭连接
+
+```cpp
+// 发送 Close 帧并进入关闭阶段（异步关闭）
 bool Close(const ConnectionPtr& conn, uint16_t code = 1000,
            const std::string& reason = "");
 
-// 广播到所有连接
+// 强制立即关闭连接（同步关闭）
+void ForceClose(const ConnectionPtr& conn);
+```
+
+**Close() vs ForceClose()**：
+- `Close()` - 发送 Close 帧后进入关闭阶段，等待对方响应。连接仍计入 GetConnectionCount()，直到收到对方 Close 或超时。
+- `ForceClose()` - 直接从连接表中移除并触发 `on_disconnected_`。适用于服务器主动终止连接的场景。
+
+### 广播
+
+```cpp
+// 广播到所有已升级连接
 size_t Broadcast(const std::vector<uint8_t>& payload,
                  OpCode opcode = OpCode::kText);
 ```
+
+**语义**：只广播已升级到 WebSocket 阶段的连接（`phase() == kWebSocket`），不包括握手阶段的连接。
 
 ### 回调设置
 

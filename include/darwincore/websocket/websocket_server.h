@@ -190,6 +190,16 @@ class WebSocketServer {
              const std::string& reason = "");
 
   /**
+   * @brief 强制立即关闭连接（同步关闭）
+   *
+   * 不会发送 Close 帧，直接断开连接并触发 on_disconnected_。
+   * 适用于服务器主动终止连接的场景。
+   *
+   * @param conn 连接指针
+   */
+  void ForceClose(const ConnectionPtr& conn);
+
+  /**
    * @brief 广播帧到所有连接
    * @param payload 负载数据
    * @param opcode 操作码

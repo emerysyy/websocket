@@ -128,12 +128,34 @@ bool WebSocketServer::Close(const ConnectionPtr& conn, uint16_t code,
   return true;
 }
 
+void WebSocketServer::ForceClose(const ConnectionPtr& conn) {
+  if (!conn) {
+    return;
+  }
+
+  auto connection_id = conn->connection_id();
+
+  {
+    std::lock_guard<std::mutex> lock(connections_mutex_);
+    connections_.erase(connection_id);
+  }
+
+  conn->set_connected(false);
+  conn->set_phase(SessionPhase::kClosed);
+
+  if (on_disconnected_) {
+    on_disconnected_(conn);
+  }
+}
+
 size_t WebSocketServer::Broadcast(const std::vector<uint8_t>& payload,
                                    OpCode opcode) {
   std::lock_guard<std::mutex> lock(connections_mutex_);
   size_t count = 0;
   for (const auto& [id, conn] : connections_) {
-    if (conn->IsConnected() && !conn->is_closing()) {
+    // 只广播已升级到 WebSocket 阶段的连接（过滤握手阶段）
+    if (conn->IsConnected() && !conn->is_closing() &&
+        conn->phase() == SessionPhase::kWebSocket) {
       auto frame = FrameBuilder::BuildFrame(opcode, payload);
       network_server_->SendData(id, frame.data(), frame.size());
       ++count;

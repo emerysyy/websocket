@@ -95,7 +95,10 @@ bool JsonRpcServer::CloseConnection(const ConnectionPtr& conn, uint16_t code,
     return false;
   }
 
-  return ws_server_->Close(conn, code, reason);
+  // 使用 ForceClose 保持同步关闭行为
+  // 旧行为：调用后立即断开并触发 on_disconnected_
+  ws_server_->ForceClose(conn);
+  return true;
 }
 
 void JsonRpcServer::SetOnClientConnected(
