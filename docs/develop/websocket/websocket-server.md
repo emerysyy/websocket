@@ -114,6 +114,9 @@ void ForceClose(const ConnectionPtr& conn, uint16_t code = 1000,
 **Close() vs ForceClose()**：
 - `Close()` - 发送 Close 帧后进入关闭阶段，等待对方响应。连接仍计入 GetConnectionCount()，直到收到对方 Close 或超时。
 - `ForceClose()` - 先发送 Close 帧通知对端，然后立即清理本地状态并触发 `on_disconnected_`。适用于服务器主动终止连接的场景。
+- **幂等性**：两者都是幂等的，重复调用不会重复发送 Close 帧或触发回调。
+
+**发送前检查**：SendFrame、SendText、SendBinary、SendPing、SendPong 等发送方法在发送前会检查 `is_closing()` 状态，正在关闭的连接返回 false。
 
 ### 广播
 
