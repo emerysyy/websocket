@@ -192,12 +192,15 @@ class WebSocketServer {
   /**
    * @brief 强制立即关闭连接（同步关闭）
    *
-   * 不会发送 Close 帧，直接断开连接并触发 on_disconnected_。
+   * 向对端发送 Close 帧，然后立即清理本地状态并触发 on_disconnected_。
    * 适用于服务器主动终止连接的场景。
    *
    * @param conn 连接指针
+   * @param code 关闭码（默认 1000 正常关闭）
+   * @param reason 关闭原因（默认空）
    */
-  void ForceClose(const ConnectionPtr& conn);
+  void ForceClose(const ConnectionPtr& conn, uint16_t code = 1000,
+                  const std::string& reason = "");
 
   /**
    * @brief 广播帧到所有连接

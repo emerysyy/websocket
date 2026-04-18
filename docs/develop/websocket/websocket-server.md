@@ -107,12 +107,13 @@ bool Close(const ConnectionPtr& conn, uint16_t code = 1000,
            const std::string& reason = "");
 
 // 强制立即关闭连接（同步关闭）
-void ForceClose(const ConnectionPtr& conn);
+void ForceClose(const ConnectionPtr& conn, uint16_t code = 1000,
+                const std::string& reason = "");
 ```
 
 **Close() vs ForceClose()**：
 - `Close()` - 发送 Close 帧后进入关闭阶段，等待对方响应。连接仍计入 GetConnectionCount()，直到收到对方 Close 或超时。
-- `ForceClose()` - 直接从连接表中移除并触发 `on_disconnected_`。适用于服务器主动终止连接的场景。
+- `ForceClose()` - 先发送 Close 帧通知对端，然后立即清理本地状态并触发 `on_disconnected_`。适用于服务器主动终止连接的场景。
 
 ### 广播
 

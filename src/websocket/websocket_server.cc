@@ -128,13 +128,20 @@ bool WebSocketServer::Close(const ConnectionPtr& conn, uint16_t code,
   return true;
 }
 
-void WebSocketServer::ForceClose(const ConnectionPtr& conn) {
+void WebSocketServer::ForceClose(const ConnectionPtr& conn, uint16_t code,
+                                 const std::string& reason) {
   if (!conn || !conn->IsConnected()) {
     return;  // 已经是断开状态，幂等
   }
 
   auto connection_id = conn->connection_id();
 
+  // 先发送 Close 帧通知对端
+  auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
+  network_server_->SendData(connection_id, close_frame.data(),
+                             close_frame.size());
+
+  // 清理本地状态
   {
     std::lock_guard<std::mutex> lock(connections_mutex_);
     connections_.erase(connection_id);

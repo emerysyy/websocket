@@ -95,9 +95,9 @@ bool JsonRpcServer::CloseConnection(const ConnectionPtr& conn, uint16_t code,
     return false;
   }
 
-  // 使用 ForceClose 保持同步关闭行为
-  // 旧行为：调用后立即断开并触发 on_disconnected_
-  ws_server_->ForceClose(conn);
+  // 使用 ForceClose 保持同步关闭行为，同时传递关闭码和原因
+  // 行为：发送 Close 帧 → 立即清理状态 → 触发 on_disconnected_
+  ws_server_->ForceClose(conn, code, reason);
   return true;
 }
 
