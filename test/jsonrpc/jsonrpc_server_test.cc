@@ -114,12 +114,12 @@ TEST(JsonRpcServer, RecvBufferOperations) {
   EXPECT_EQ(conn->recv_buffer().size(), 4);
 
   // 消费部分数据
-  conn->consume_recv_buffer(2);
+  conn->ConsumeRecvBuffer(2);
   EXPECT_EQ(conn->recv_buffer().size(), 2);
   EXPECT_EQ(conn->recv_buffer()[0], 0x03);
 
   // 消费剩余数据
-  conn->consume_recv_buffer(10);  // 超过大小，应该清空
+  conn->ConsumeRecvBuffer(10);  // 超过大小，应该清空
   EXPECT_TRUE(conn->recv_buffer().empty());
 }
 
@@ -205,7 +205,7 @@ TEST(JsonRpcServer, WebSocketFrameProcessing) {
   EXPECT_EQ(parsed->payload.size(), json_request.size());
 
   // 消费已解析的帧
-  conn->consume_recv_buffer(consumed);
+  conn->ConsumeRecvBuffer(consumed);
   EXPECT_TRUE(conn->recv_buffer().empty());
 }
 
@@ -236,7 +236,7 @@ TEST(JsonRpcServer, FragmentedFrameBuffering) {
   EXPECT_EQ(parsed1->opcode, OpCode::kText);
   EXPECT_FALSE(parsed1->fin);
 
-  conn->consume_recv_buffer(consumed);
+  conn->ConsumeRecvBuffer(consumed);
   EXPECT_TRUE(conn->recv_buffer().empty());
 }
 
@@ -281,7 +281,7 @@ TEST(JsonRpcServer, CloseFrameStateTransition) {
   ASSERT_TRUE(parsed.has_value());
   EXPECT_EQ(parsed->opcode, OpCode::kClose);
 
-  conn->consume_recv_buffer(consumed);
+  conn->ConsumeRecvBuffer(consumed);
   EXPECT_TRUE(conn->recv_buffer().empty());
 
   // 模拟 CloseConnection 后的状态

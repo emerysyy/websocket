@@ -10,19 +10,13 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
-#include <darwincore/network/server.h>
-
-#include "darwincore/websocket/frame_builder.h"
-#include "darwincore/websocket/frame_parser.h"
-#include "darwincore/websocket/handshake_handler.h"
-#include "darwincore/websocket/session.h"
+#include "darwincore/websocket/websocket_server.h"
 #include "darwincore/jsonrpc/notification_builder.h"
 #include "darwincore/jsonrpc/request_handler.h"
 
@@ -30,63 +24,19 @@ namespace darwincore {
 namespace websocket {
 
 /**
- * @brief 连接包装器（业务层使用）
- *
- * 封装 connection_id，继承 WebSocketSession 提供会话状态管理。
- * 会话状态挂在 Connection 自身（通过继承 WebSocketSession），
- * 不维护全局连接表。
- *
- * 遵循架构原则：
- * - 一个连接对应一个 session
- * - session 状态挂在 Connection 上
- */
-class Connection final : public WebSocketSession {
- public:
-  explicit Connection(uint64_t id, const std::string& remote_addr = "")
-      : WebSocketSession(), connection_id_(id), remote_address_(remote_addr) {
-    set_phase(SessionPhase::kHandshake);
-  }
-
-  uint64_t connection_id() const { return connection_id_; }
-  const std::string& remote_address() const { return remote_address_; }
-  bool IsConnected() const { return connected_; }
-  void set_connected(bool connected) { connected_ = connected; }
-
-  // 接收缓冲区（跨帧缓冲未完整数据）
-  std::vector<uint8_t>& recv_buffer() { return recv_buffer_; }
-  const std::vector<uint8_t>& recv_buffer() const { return recv_buffer_; }
-
-  // 移除已处理的字节
-  void consume_recv_buffer(size_t bytes) {
-    if (bytes >= recv_buffer_.size()) {
-      recv_buffer_.clear();
-    } else {
-      recv_buffer_.erase(recv_buffer_.begin(), recv_buffer_.begin() + bytes);
-    }
-  }
-
- private:
-  uint64_t connection_id_;
-  std::string remote_address_;
-  bool connected_ = true;
-  std::vector<uint8_t> recv_buffer_;  // 跨帧缓冲
-};
-
-/**
- * @brief 连接指针类型
- */
-using ConnectionPtr = std::shared_ptr<Connection>;
-
-/**
  * @brief JSON-RPC 服务器
  *
- * 建立在 WebSocket 层之上的 JSON-RPC 2.0 服务器。
- * 会话状态挂在 Connection::context_ 上，不维护全局连接表。
+ * 建立在 WebSocketServer 之上的 JSON-RPC 2.0 服务器。
+ * 复用 WebSocketServer 的握手、帧解析、连接管理等能力。
  */
 class JsonRpcServer {
  public:
   JsonRpcServer();
   ~JsonRpcServer();
+
+  // 不可拷贝
+  JsonRpcServer(const JsonRpcServer&) = delete;
+  JsonRpcServer& operator=(const JsonRpcServer&) = delete;
 
   /**
    * @brief 启动服务器
@@ -162,46 +112,15 @@ class JsonRpcServer {
   void SetOnError(std::function<void(const ConnectionPtr&, const std::string&)> callback);
 
  private:
-  // 辅助 - 通过 connection_id 查找 ConnectionPtr
-  // 注意：connections_ 只用于 id → ConnectionPtr 的反向查找
-  // 会话状态挂在 Connection 自身（继承 WebSocketSession）
-  ConnectionPtr GetConnection(uint64_t connection_id);
-  size_t FindHttpRequestEnd(const std::vector<uint8_t>& buffer);
-  bool IsHandshakeSizeValid(size_t size);
-
-  // 内部实现
-  void CloseConnectionInternal(const ConnectionPtr& conn, uint16_t code,
-                               const std::string& reason);
-
-  // DarwinCore 回调处理
-  void OnNetworkConnected(const darwincore::network::ConnectionInformation& info);
-  void OnNetworkMessage(uint64_t connection_id, const std::vector<uint8_t>& data);
-  void OnNetworkDisconnected(uint64_t connection_id);
-  void OnNetworkError(uint64_t connection_id, const std::string& message);
-
-  // 协议处理
-  void HandleHandshake(const ConnectionPtr& conn, const std::string& data);
-  void ProcessWebSocketFrames(const ConnectionPtr& conn);
-  void HandleWebSocketFrame(const ConnectionPtr& conn, const Frame& frame);
+  // JSON-RPC 帧处理
+  void HandleJsonRpcFrame(const ConnectionPtr& conn, const Frame& frame);
   void HandleJsonRpcRequest(const ConnectionPtr& conn, const std::string& request);
-  bool SendWebSocketFrame(const ConnectionPtr& conn,
-                         const std::vector<uint8_t>& payload,
-                         OpCode opcode);
-
-  static constexpr size_t kMaxHandshakeSize = 16384;
-  static constexpr size_t kMaxWebSocketFrameSize = 10 * 1024 * 1024;
-  static constexpr size_t kBufferCleanupThreshold = 4096;
+  bool SendJsonRpcResponse(const ConnectionPtr& conn, const std::string& response);
 
   std::unique_ptr<::darwincore::jsonrpc::RequestHandler> rpc_handler_;
+  std::unique_ptr<WebSocketServer> ws_server_;
 
   std::atomic<bool> is_running_{false};
-
-  // 连接索引（仅用于 connection_id 到 ConnectionPtr 的映射）
-  mutable std::mutex connections_mutex_;
-  std::unordered_map<uint64_t, ConnectionPtr> connections_;
-
-  // DarwinCore 网络服务器
-  std::unique_ptr<darwincore::network::Server> network_server_;
 
   // 回调
   std::function<void(const ConnectionPtr&)> on_connected_;
