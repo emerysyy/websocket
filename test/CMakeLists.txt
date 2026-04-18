@@ -9,6 +9,7 @@ add_executable(run_tests
     websocket/frame_builder_test.cc
     websocket/handshake_handler_test.cc
     websocket/websocket_session_test.cc
+    websocket/websocket_server_test.cc
     jsonrpc/request_handler_test.cc
     jsonrpc/notification_builder_test.cc
     jsonrpc/jsonrpc_server_test.cc

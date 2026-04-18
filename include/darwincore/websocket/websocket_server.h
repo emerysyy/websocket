@@ -236,6 +236,18 @@ class WebSocketServer {
   ConnectionPtr GetConnection(uint64_t connection_id);
   size_t FindHttpRequestEnd(const std::vector<uint8_t>& buffer);
 
+#ifdef WEBSOCKET_SERVER_TEST
+ public:
+  // 测试辅助方法：添加测试连接
+  ConnectionPtr AddTestConnection(uint64_t id, const std::string& remote_addr = "") {
+    auto conn = std::make_shared<Connection>(id, remote_addr);
+    conn->set_phase(SessionPhase::kWebSocket);
+    std::lock_guard<std::mutex> lock(connections_mutex_);
+    connections_[id] = conn;
+    return conn;
+  }
+#endif
+
   // DarwinCore 回调处理
   void OnNetworkConnected(const darwincore::network::ConnectionInformation& info);
   void OnNetworkMessage(uint64_t connection_id, const std::vector<uint8_t>& data);

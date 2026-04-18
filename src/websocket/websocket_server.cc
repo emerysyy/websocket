@@ -129,8 +129,8 @@ bool WebSocketServer::Close(const ConnectionPtr& conn, uint16_t code,
 }
 
 void WebSocketServer::ForceClose(const ConnectionPtr& conn) {
-  if (!conn) {
-    return;
+  if (!conn || !conn->IsConnected()) {
+    return;  // 已经是断开状态，幂等
   }
 
   auto connection_id = conn->connection_id();
