@@ -70,7 +70,7 @@ void JsonRpcServer::RegisterMethod(const std::string& method,
 bool JsonRpcServer::SendNotification(const ConnectionPtr& conn,
                                     const std::string& method,
                                     const nlohmann::json& params) {
-  if (!conn || !conn->IsConnected()) {
+  if (!conn || !conn->IsConnected() || conn->is_closing()) {
     return false;
   }
 

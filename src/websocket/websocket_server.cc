@@ -77,6 +77,11 @@ bool WebSocketServer::SendFrame(const ConnectionPtr& conn,
     return false;
   }
 
+  // 正在关闭的连接不应再发送业务帧
+  if (conn->is_closing()) {
+    return false;
+  }
+
   auto frame = FrameBuilder::BuildFrame(opcode, payload);
   network_server_->SendData(conn->connection_id(), frame.data(),
                              frame.size());
