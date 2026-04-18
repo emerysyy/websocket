@@ -120,11 +120,17 @@ bool WebSocketServer::Close(const ConnectionPtr& conn, uint16_t code,
     return false;
   }
 
+  // 已经在关闭中，幂等返回
+  if (conn->is_closing()) {
+    return true;
+  }
+
+  conn->set_closing(true);
+
   auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
   network_server_->SendData(conn->connection_id(), close_frame.data(),
                              close_frame.size());
 
-  conn->set_closing(true);
   return true;
 }
 
@@ -134,9 +140,12 @@ void WebSocketServer::ForceClose(const ConnectionPtr& conn, uint16_t code,
     return;  // 已经是断开状态，幂等
   }
 
+  // 先标记为正在关闭，防止并发操作（如 Broadcast）再次处理此连接
+  conn->set_closing(true);
+
   auto connection_id = conn->connection_id();
 
-  // 先发送 Close 帧通知对端
+  // 发送 Close 帧通知对端
   auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
   network_server_->SendData(connection_id, close_frame.data(),
                              close_frame.size());
