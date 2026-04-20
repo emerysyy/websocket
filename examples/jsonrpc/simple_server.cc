@@ -6,11 +6,11 @@
 
 #include <chrono>
 #include <csignal>
+#include <sys/resource.h>
 #include <iostream>
 #include <memory>
 #include <thread>
 
-#include "darwincore/network/server.h"
 #include "darwincore/jsonrpc/jsonrpc_server.h"
 
 using namespace darwincore::websocket;

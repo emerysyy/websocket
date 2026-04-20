@@ -15,7 +15,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include <darwincore/network/server.h>
+#include <darwincore/network/transport/server.h>
+#include <darwincore/network/transport/connection.h>
+#include <darwincore/network/base/event_loop_group.h>
 
 #include "frame_builder.h"
 #include "frame_parser.h"
@@ -30,7 +32,7 @@ namespace websocket {
  *
  * 封装 connection_id，继承 WebSocketSession 提供会话状态管理。
  * 会话状态挂在 Connection 自身（通过继承 WebSocketSession），
- * 不维护全局连接表。
+ * 连接索引由网络层事件驱动维护。
  *
  * 遵循架构原则：
  * - 一个连接对应一个 session
@@ -47,6 +49,10 @@ class Connection final : public WebSocketSession {
   const std::string& remote_address() const { return remote_address_; }
   bool IsConnected() const { return connected_; }
   void set_connected(bool connected) { connected_ = connected; }
+
+  // 网络层连接指针
+  void set_network_conn(const darwincore::network::ConnectionPtr& conn) { network_conn_ = conn; }
+  darwincore::network::ConnectionPtr network_conn() const { return network_conn_; }
 
   // 接收缓冲区（跨帧缓冲未完整数据）
   std::vector<uint8_t>& recv_buffer() { return recv_buffer_; }
@@ -66,6 +72,7 @@ class Connection final : public WebSocketSession {
   std::string remote_address_;
   bool connected_ = true;
   std::vector<uint8_t> recv_buffer_;  // 跨帧缓冲
+  darwincore::network::ConnectionPtr network_conn_;  // 网络层连接指针
 };
 
 /**
@@ -236,25 +243,13 @@ class WebSocketServer {
 
  private:
   // 辅助方法
-  ConnectionPtr GetConnection(uint64_t connection_id);
   size_t FindHttpRequestEnd(const std::vector<uint8_t>& buffer);
 
-#ifdef WEBSOCKET_SERVER_TEST
- public:
-  // 测试辅助方法：添加测试连接
-  ConnectionPtr AddTestConnection(uint64_t id, const std::string& remote_addr = "") {
-    auto conn = std::make_shared<Connection>(id, remote_addr);
-    conn->set_phase(SessionPhase::kWebSocket);
-    std::lock_guard<std::mutex> lock(connections_mutex_);
-    connections_[id] = conn;
-    return conn;
-  }
-#endif
-
   // DarwinCore 回调处理
-  void OnNetworkConnected(const darwincore::network::ConnectionInformation& info);
-  void OnNetworkMessage(uint64_t connection_id, const std::vector<uint8_t>& data);
-  void OnNetworkDisconnected(uint64_t connection_id);
+  void OnNetworkConnected(const darwincore::network::ConnectionPtr& conn);
+  void OnNetworkMessage(const darwincore::network::ConnectionPtr& conn,
+                        const std::vector<uint8_t>& data);
+  void OnNetworkDisconnected(const darwincore::network::ConnectionPtr& conn);
 
   // 协议处理
   void HandleHandshake(const ConnectionPtr& conn, const std::string& data);
@@ -267,7 +262,10 @@ class WebSocketServer {
 
   std::atomic<bool> is_running_{false};
 
-  // 连接索引（仅用于 connection_id 到 ConnectionPtr 的映射）
+  // I/O loop 组
+  darwincore::network::EventLoopGroup loop_group_;
+
+  // 连接索引（用于 network connection id 到 WebSocket Connection 的映射）
   mutable std::mutex connections_mutex_;
   std::unordered_map<uint64_t, ConnectionPtr> connections_;
 

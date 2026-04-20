@@ -5,10 +5,13 @@
 
 #include <iostream>
 
+#include <darwincore/network/base/event_loop_group.h>
+
 namespace darwincore {
 namespace websocket {
 
-WebSocketServer::WebSocketServer() : network_server_(nullptr) {}
+WebSocketServer::WebSocketServer()
+    : loop_group_(1, "ws-io"), network_server_(nullptr) {}
 
 WebSocketServer::~WebSocketServer() { Stop(); }
 
@@ -18,26 +21,37 @@ bool WebSocketServer::Start(const std::string& host, uint16_t port) {
     return false;
   }
 
-  network_server_ = std::make_unique<darwincore::network::Server>();
+  // 启动 I/O loop 线程
+  if (!loop_group_.Start()) {
+    std::cerr << "[WebSocketServer] Failed to start I/O loop group" << std::endl;
+    return false;
+  }
 
-  // 设置回调
-  network_server_->SetOnClientConnected([this](
-      const darwincore::network::ConnectionInformation& info) {
-    OnNetworkConnected(info);
+  network_server_ = std::make_unique<darwincore::network::Server>(loop_group_, "ws-server");
+
+  // 设置连接回调（连接/断开共用，通过 conn->IsConnected() 区分）
+  network_server_->SetConnectionCallback([this](const darwincore::network::ConnectionPtr& conn) {
+    if (conn->IsConnected()) {
+      OnNetworkConnected(conn);
+    } else {
+      OnNetworkDisconnected(conn);
+    }
   });
 
-  network_server_->SetOnMessage([this](uint64_t conn_id,
-                                       const std::vector<uint8_t>& data) {
-    OnNetworkMessage(conn_id, data);
+  // 设置消息回调
+  network_server_->SetMessageCallback([this](const darwincore::network::ConnectionPtr& conn,
+                                             darwincore::network::Buffer& buffer,
+                                             [[maybe_unused]] darwincore::network::Timestamp recv_time) {
+    std::vector<uint8_t> data(buffer.Peek(), buffer.Peek() + buffer.ReadableBytes());
+    OnNetworkMessage(conn, data);
+    buffer.RetrieveAll();  // 清空 buffer
   });
-
-  network_server_->SetOnClientDisconnected(
-      [this](uint64_t conn_id) { OnNetworkDisconnected(conn_id); });
 
   if (!network_server_->StartIPv4(host, port)) {
     std::cerr << "[WebSocketServer] Failed to start server on " << host
               << ":" << port << std::endl;
     network_server_.reset();
+    loop_group_.Stop();
     return false;
   }
 
@@ -58,6 +72,8 @@ void WebSocketServer::Stop() {
     network_server_->Stop();
     network_server_.reset();
   }
+
+  loop_group_.Stop();
 
   std::lock_guard<std::mutex> lock(connections_mutex_);
   connections_.clear();
@@ -82,9 +98,13 @@ bool WebSocketServer::SendFrame(const ConnectionPtr& conn,
     return false;
   }
 
+  auto net_conn = conn->network_conn();
+  if (!net_conn) {
+    return false;
+  }
+
   auto frame = FrameBuilder::BuildFrame(opcode, payload);
-  network_server_->SendData(conn->connection_id(), frame.data(),
-                             frame.size());
+  net_conn->Send(frame.data(), frame.size());
   return true;
 }
 
@@ -132,9 +152,12 @@ bool WebSocketServer::Close(const ConnectionPtr& conn, uint16_t code,
 
   conn->set_closing(true);
 
-  auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
-  network_server_->SendData(conn->connection_id(), close_frame.data(),
-                             close_frame.size());
+  // 发送 Close 帧（如果有网络连接）
+  auto net_conn = conn->network_conn();
+  if (net_conn) {
+    auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
+    net_conn->Send(close_frame.data(), close_frame.size());
+  }
 
   return true;
 }
@@ -145,22 +168,28 @@ void WebSocketServer::ForceClose(const ConnectionPtr& conn, uint16_t code,
     return;  // 已经是断开状态，幂等
   }
 
-  auto connection_id = conn->connection_id();
-
   const bool was_closing = conn->is_closing();
   conn->set_closing(true);
 
   // 已经处于 Close 流程时，不再重复发送 Close 帧
   if (!was_closing) {
-    auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
-    network_server_->SendData(connection_id, close_frame.data(),
-                               close_frame.size());
+    auto net_conn = conn->network_conn();
+    if (net_conn) {
+      auto close_frame = FrameBuilder::CreateCloseFrame(code, reason);
+      net_conn->Send(close_frame.data(), close_frame.size());
+    }
+  }
+
+  uint64_t conn_id = conn->connection_id();
+  auto net_conn = conn->network_conn();
+  if (net_conn) {
+    conn_id = net_conn->GetConnectionId();
   }
 
   // 清理本地状态
   {
     std::lock_guard<std::mutex> lock(connections_mutex_);
-    connections_.erase(connection_id);
+    connections_.erase(conn_id);
   }
 
   conn->set_connected(false);
@@ -175,13 +204,17 @@ size_t WebSocketServer::Broadcast(const std::vector<uint8_t>& payload,
                                    OpCode opcode) {
   std::lock_guard<std::mutex> lock(connections_mutex_);
   size_t count = 0;
+  auto frame = FrameBuilder::BuildFrame(opcode, payload);
   for (const auto& [id, conn] : connections_) {
     // 只广播已升级到 WebSocket 阶段的连接（过滤握手阶段）
     if (conn->IsConnected() && !conn->is_closing() &&
         conn->phase() == SessionPhase::kWebSocket) {
-      auto frame = FrameBuilder::BuildFrame(opcode, payload);
-      network_server_->SendData(id, frame.data(), frame.size());
-      ++count;
+      ++count;  // 计入符合条件的连接
+      // 实际发送需要网络连接（测试用连接可能没有）
+      auto net_conn = conn->network_conn();
+      if (net_conn) {
+        net_conn->Send(frame.data(), frame.size());
+      }
     }
   }
   return count;
@@ -206,15 +239,6 @@ void WebSocketServer::SetOnError(
   on_error_ = std::move(callback);
 }
 
-ConnectionPtr WebSocketServer::GetConnection(uint64_t connection_id) {
-  std::lock_guard<std::mutex> lock(connections_mutex_);
-  auto it = connections_.find(connection_id);
-  if (it != connections_.end()) {
-    return it->second;
-  }
-  return nullptr;
-}
-
 size_t WebSocketServer::FindHttpRequestEnd(
     const std::vector<uint8_t>& buffer) {
   if (buffer.size() < 4) {
@@ -230,26 +254,38 @@ size_t WebSocketServer::FindHttpRequestEnd(
 }
 
 void WebSocketServer::OnNetworkConnected(
-    const darwincore::network::ConnectionInformation& info) {
-  auto conn =
-      std::make_shared<Connection>(info.connection_id, info.peer_address);
+    const darwincore::network::ConnectionPtr& net_conn) {
+  auto conn = std::make_shared<Connection>(net_conn->GetConnectionId(),
+                                           net_conn->PeerAddr());
+  conn->set_network_conn(net_conn);
 
   {
     std::lock_guard<std::mutex> lock(connections_mutex_);
-    connections_[info.connection_id] = conn;
+    connections_[net_conn->GetConnectionId()] = conn;
   }
 
-  std::cout << "[WebSocketServer] Client connected: " << info.connection_id
-            << " from " << info.peer_address << std::endl;
+  std::cout << "[WebSocketServer] Client connected: " << net_conn->GetConnectionId()
+            << " from " << net_conn->PeerAddr() << std::endl;
 
   if (on_connected_) {
     on_connected_(conn);
   }
 }
 
-void WebSocketServer::OnNetworkMessage(uint64_t connection_id,
+void WebSocketServer::OnNetworkMessage(const darwincore::network::ConnectionPtr& net_conn,
                                        const std::vector<uint8_t>& data) {
-  auto conn = GetConnection(connection_id);
+  if (!net_conn) {
+    return;
+  }
+
+  ConnectionPtr conn;
+  {
+    std::lock_guard<std::mutex> lock(connections_mutex_);
+    auto it = connections_.find(net_conn->GetConnectionId());
+    if (it != connections_.end()) {
+      conn = it->second;
+    }
+  }
   if (!conn) {
     return;
   }
@@ -268,8 +304,7 @@ void WebSocketServer::OnNetworkMessage(uint64_t connection_id,
         on_error_(conn, "Handshake buffer overflow");
       }
       const uint8_t kBadRequest[] = "HTTP/1.1 400 Bad Request\r\n\r\n";
-      network_server_->SendData(connection_id, kBadRequest,
-                                sizeof(kBadRequest) - 1);
+      net_conn->Send(kBadRequest, sizeof(kBadRequest) - 1);
       return;
     }
   }
@@ -291,11 +326,12 @@ void WebSocketServer::OnNetworkMessage(uint64_t connection_id,
   // kClosing 和 kClosed 阶段不处理数据
 }
 
-void WebSocketServer::OnNetworkDisconnected(uint64_t connection_id) {
+void WebSocketServer::OnNetworkDisconnected(
+    const darwincore::network::ConnectionPtr& net_conn) {
   ConnectionPtr conn;
   {
     std::lock_guard<std::mutex> lock(connections_mutex_);
-    auto it = connections_.find(connection_id);
+    auto it = connections_.find(net_conn->GetConnectionId());
     if (it != connections_.end()) {
       conn = it->second;
       connections_.erase(it);
@@ -304,7 +340,7 @@ void WebSocketServer::OnNetworkDisconnected(uint64_t connection_id) {
 
   if (conn) {
     conn->set_connected(false);
-    std::cout << "[WebSocketServer] Client disconnected: " << connection_id
+    std::cout << "[WebSocketServer] Client disconnected: " << net_conn->GetConnectionId()
               << std::endl;
 
     if (on_disconnected_) {
@@ -321,8 +357,7 @@ void WebSocketServer::HandleHandshake(const ConnectionPtr& conn,
       on_error_(conn, "Handshake too large");
     }
     const uint8_t kBadRequest[] = "HTTP/1.1 400 Bad Request\r\n\r\n";
-    network_server_->SendData(conn->connection_id(), kBadRequest,
-                              sizeof(kBadRequest) - 1);
+    conn->network_conn()->Send(kBadRequest, sizeof(kBadRequest) - 1);
     return;
   }
 
@@ -333,16 +368,14 @@ void WebSocketServer::HandleHandshake(const ConnectionPtr& conn,
       on_error_(conn, "Invalid handshake");
     }
     auto error_resp = handler.GenerateErrorResponse(handler.GetLastError());
-    network_server_->SendData(conn->connection_id(),
-                              reinterpret_cast<const uint8_t*>(error_resp.data()),
-                              error_resp.size());
+    conn->network_conn()->Send(reinterpret_cast<const uint8_t*>(error_resp.data()),
+                               error_resp.size());
     return;
   }
 
   std::string response = handler.GenerateResponse();
-  network_server_->SendData(conn->connection_id(),
-                            reinterpret_cast<const uint8_t*>(response.data()),
-                            response.size());
+  conn->network_conn()->Send(reinterpret_cast<const uint8_t*>(response.data()),
+                             response.size());
 
   // 移除已处理的 HTTP 数据
   size_t http_end = FindHttpRequestEnd(conn->recv_buffer());
@@ -398,8 +431,10 @@ void WebSocketServer::ProcessWebSocketFrames(const ConnectionPtr& conn) {
       }
       // 发送关闭帧并关闭
       auto close_frame = FrameBuilder::CreateCloseFrame(1002, "Protocol error");
-      network_server_->SendData(conn->connection_id(), close_frame.data(),
-                                 close_frame.size());
+      auto net_conn = conn->network_conn();
+      if (net_conn) {
+        net_conn->Send(close_frame.data(), close_frame.size());
+      }
       conn->set_phase(SessionPhase::kClosed);
       return;
     }
@@ -439,8 +474,10 @@ void WebSocketServer::HandleFrame(const ConnectionPtr& conn,
       if (!conn->is_closing()) {
         conn->set_closing(true);
         auto close_frame = FrameBuilder::CreateCloseFrame(1000, "");
-        network_server_->SendData(conn->connection_id(), close_frame.data(),
-                                 close_frame.size());
+        auto net_conn = conn->network_conn();
+        if (net_conn) {
+          net_conn->Send(close_frame.data(), close_frame.size());
+        }
         conn->set_phase(SessionPhase::kClosed);
       }
       break;
